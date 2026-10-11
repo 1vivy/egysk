@@ -4,9 +4,10 @@ Egysk is the current core product: a separated Magisk-derived native userspace,
 an rdinit loader, and a small kernel helper for multi-OS Android. This README
 owns the remaining integration checklist. Core and platform source/producer
 cutover, repository naming and complete release packaging are implemented.
-Whole-device validation is not complete. Source builds alone do not establish
-Android consumer behavior; existing real-device userspace evidence and source/RE
-remain valid inputs.
+The authorized integrated phone boot is proved in permissive mode; enforcing
+and operation-specific qualification remain separate. Source builds alone do not
+establish Android consumer behavior; real-device evidence and source/RE remain
+valid inputs.
 
 ## Ownership and identity
 
@@ -104,6 +105,9 @@ process-group bound. Scripts receive `EGYSK_BACKING_ROOT` for the selected physi
 backing, independent of Android's projected `/metadata`. Services remain disabled
 until their owning stage succeeds. Early Android projection uses Magisk's built-in
 magic mount, without running post-fs-data scripts early.
+Core bootstrap policy covers init's access to private device nodes before module
+policy can be loaded. Module-specific domains and service transitions stay with
+the owning module.
 
 Installed directories with matching `module.prop` IDs are inventory;
 `modules_order` ranks them, appending unlisted IDs in stable order. Flags
@@ -268,18 +272,21 @@ provisioning commands; it is not another product-root migration engine.
   mappings, upstream `dmsetup` owns product mapping reloads. Preserve DM
   names/UUIDs/tables and existing-storage activation; neither is a prerequisite
   of the shared module store.
-- The Partformer configfs ABI4 interface (unrelated to the helper's uapi ABI 4
+- The Partformer configfs ABI5 interface (unrelated to the helper's uapi ABI 4
   above) supersedes the proposed ABI3 integration: generic
   `View(name, backing, sectors, access, offset)`,
   `Endpoint(backing, hide, writable)` and
-  `Plan(mapping, views, endpoints, seal, lvs)` belong to partformer; ROM selection
+  `Plan(mapping, namespace_anchor, views, endpoints, seal, lvs)` belong to partformer; ROM selection
   belongs to the gobbl-multi-os adapter. ppconf only checks/operates the externally
   provisioned configfs ABI, never mounts configfs or loads the LKM.
-  Production ABI4 uploads 67/70/76/88 ordered 512-byte sector records for
+  Production ABI5 uploads 67/70/76/88 ordered 512-byte sector records for
   512/1024/2048/4096-byte logical blocks, then uses
   `pp-meta`/`pp-range`/`pp-hole` DM targets, `endpoints`, commit and reset after
-  normal DM removal. GPT construction uses one bounded metadata buffer;
-  upstream DM owns data I/O and queue/crypto propagation. Partition publication,
+  normal DM removal. GPT construction uses one bounded metadata buffer.
+  Its optional physical namespace anchor is independent of endpoint access
+  rights and immutable across reload; the phone adapter selects ESP ancestry
+  so stock Android discovers projected partitions under the boot device.
+  Upstream DM owns data I/O and queue/crypto propagation. Partition publication,
   writable/RO ranges, physical PARTNAME hiding and seal behavior remain separate
   from protection against a hostile root ROM.
 - EFI remains at `/sys/firmware/efi/efivars`, type `efivarfs`, with native EFI
@@ -491,7 +498,7 @@ ownership rationale, not a competing implementation plan.
     journaled credential-identity transitions; no automatic boot-time adoption.
 
 - [x] **Native source integration and Egysk identity:** both native producers and
-  downstream packaging passed; whole-device behavior remains separately pending.
+  downstream packaging passed, followed by the authorized permissive phone boot.
   - [x] Port the selected
     [Magisk additive-boundary design](../mockups/2026-10-09/magisk-selection/README.md)
     into one production three-patch series/materializer; link authoritative
@@ -500,15 +507,15 @@ ownership rationale, not a competing implementation plan.
     actual late callbacks/common scripts and authorized native SU; refuse
     excluded stock side effects at entry boundaries. Exact replay and both
     native architecture producers are green, not whole-device proof.
-- [x] **Partformer ABI4 source cutover:** the
+- [x] **Partformer ABI5 source cutover:** the
   [selected design](../mockups/2026-10-09/partformer/README.md) is implemented as
-  Rust Partformer/ppconf with Android arm64/x86_64 producers. Independent ABI4
+  Rust Partformer/ppconf with Android arm64/x86_64 producers. Independent ABI5
   LKMs build and pass admission in both lanes. Firmware views, gobbl-multi-os
   and OTA/HAL callers use the shared check/prepare/publish/reload/teardown
   lifecycle, retaining rollback, busy-removal failure and stable mapped-device
   identity across reload. The actual CLI covers 512-byte and 4Kn metadata.
-  Live partition discovery, projected I/O and hardware-wrapped crypto remain
-  part of the final device integration check, not consequences of a build.
+  Phone discovery and encrypted userdata mounting passed separately; anchored
+  sealing, live reload and busy teardown are not implied by those observations.
 - [x] **Peer credential source lifecycle:** integrate the
   [credential coordinator and pinned gatekeeperd patch](../mockups/2026-10-09/gobbl-credentials/README.md)
   with existing installation/update/wipe selection, `gobbl-runtime`, packaging,
@@ -524,7 +531,7 @@ ownership rationale, not a competing implementation plan.
   discovery, quotas, reservation policy and generalized reclamation are out of
   scope; organic exhaustion remains Android/backend behavior, not a gobbl
   capacity-management responsibility. Do not mask the backend's failure.
-- [x] **Cross-repository wiring:** reconcile changed native hooks, configfs ABI4
+- [x] **Cross-repository wiring:** reconcile changed native hooks, configfs ABI5
   and peer identities through schema v2, Surfacer, bootgen/provisioning,
   module/tool packaging, cpio/OTA assembly and gobbl-lab fixtures. Keep one
   module inventory and shared view, independent bootstrap inputs, exact KMI
@@ -574,17 +581,19 @@ ownership rationale, not a competing implementation plan.
   vendoring/producer paths and obsolete build instructions to the integrated
   source. Do not silently expand this cutover into all unimplemented operations
   in the older provisioning plan.
-- [ ] **Close only remaining behavioral gaps:** reuse source/RE, existing suites,
-  enforcing CF OTA results and existing real-device userspace observations.
-  Check original-init handoff and reconstruction of the same source/generations,
-  one RW ESP, metadata ownership, policy/labels before early HALs, exactly-once
-  stages and optional/critical failure handling for the integrated deltas.
-  Retain package replacement/rollback, shared state across installations,
-  projected writes and EFI HAL-domain I/O behavior. The existing nine-row OTA
-  baseline is a regression reference, not nine unfinished implementation tasks.
-  Record unresolved credential consumers and module operations honestly;
-  no mandatory new harness, phone loop or hostile-ROM security proof is added.
-  Physical integration/deployment remains a separate owner-selected action.
+- [x] **Authorized integrated phone boot:** the
+  `20261010T232708Z-egysk-cutover` record proves stock-init handoff and storage
+  reconstruction, native projection, delta-only metadata, both credential stages
+  and `sys.boot_completed=1` in the owner-selected permissive lane. Persisted
+  metadata-only copy-up executed across subsequent boots. Real fatal failures
+  reached kernel panic evidence rather than disappearing into quiet reboots.
+- [ ] **Remaining operation qualification:** retain source/RE, existing suites
+  and the nine-row OTA baseline as regression references, not unfinished
+  implementation tasks. Enforcing operation, new credential enrollment/PIN
+  verification, anchored seal/reload/busy teardown and the integrated payload's
+  OTA/rollback/HAL I/O behavior are not established by successful boot.
+  Exercise remaining operations only within their exact owner authorization;
+  no mandatory new harness or hostile-ROM security proof is added.
 
 No successful build implicitly authorizes push, deployment, remote rename or
 physical-device writes.

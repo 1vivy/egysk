@@ -4,6 +4,7 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -352,7 +353,12 @@ pub fn reconstruct(hex: &str) -> Result<()> {
     // Persisted uppers carry Android export labels from the previous boot.
     // Relabel them in the product domain, not by expanding stock init's access.
     // OverlayFS also retains this domain's credentials for lower/upper work.
-    fs::write("/proc/self/attr/current", DOMAIN.as_bytes())
+    // This is an existing procfs attribute, not a file to create or truncate.
+    fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/self/attr/current")
+        .context("open current SELinux task attribute")?
+        .write_all(DOMAIN.as_bytes())
         .context("enter product context before reconstructing module storage")?;
     // Only the dedicated framework subtree is labelled, never metadata's keys
     // or password_slots siblings. Do this before attaching any overlay.

@@ -67,6 +67,14 @@ int apply_kernelsu_rules(void)
         !ksu_allow(db, "init", "kernel", "security", "load_policy") ||
         !ksu_allow(db, "init", "toolbox_exec", "file", "execute_no_trans") ||
         !ksu_allow(db, "init", "block_device", "blk_file", "create") ||
+        /* Backing reconstruction runs as init before module policy is available. */
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "chr_file", "create") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "chr_file", "read") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "chr_file", "write") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "chr_file", "open") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "chr_file", "ioctl") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "blk_file", "create") ||
+        !ksu_allow(db, "init", KERNEL_SU_FILE, "blk_file", "getattr") ||
         !ksu_allow(db, "init", "vfat", "dir", "getattr") || !ksu_allow(db, "init", "vfat", "dir", "open") ||
         !ksu_allow(db, "init", "vfat", "dir", "read") || !ksu_allow(db, "init", "vfat", "dir", "search") ||
         !ksu_allow(db, "init", "vfat", "file", "getattr") || !ksu_allow(db, "init", "vfat", "file", "open") ||
