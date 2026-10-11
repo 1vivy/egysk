@@ -1,6 +1,7 @@
 //! Wire contract between rdinit, Android reconstruction and the native daemon.
 //! `/egysk.toml` is the cpio bootstrap configuration. The selected ESP's
-//! `egysk/egysk.toml` uses the same schema and must agree on backing/KMI.
+//! `egysk/egysk.toml` uses the same schema and must agree on backing. The
+//! current ramdisk selects KMI independently of the shared package's initial set.
 //! Descriptor v1 is JSON encoded as lowercase hex in the one-pass init RC. It is
 //! not rediscovered after handoff: device, backing, admission, order and package
 //! generations are carried verbatim. No ROM identity selects module storage.
@@ -193,6 +194,18 @@ pub fn absolute(value: &str) -> Result<()> {
 }
 
 impl BootstrapConfig {
+    /// Resolve shared package settings against this boot's ramdisk selection.
+    pub fn for_boot(mut self, bootstrap: Self) -> Result<Self> {
+        ensure!(
+            bootstrap.backing == self.backing,
+            "cpio/package backing mismatch"
+        );
+        self.kmi = bootstrap.kmi;
+        self.safe_mode |= bootstrap.safe_mode;
+        self.norc |= bootstrap.norc;
+        Ok(self)
+    }
+
     pub fn validate(&self) -> Result<()> {
         identifier(&self.kmi)?;
         ensure!(

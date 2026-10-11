@@ -175,19 +175,14 @@ pub fn run() -> Result<()> {
     let (esp_major, esp_minor) = crate::esp::mount_esp(initial.esp_device.as_deref())?;
     owned.push(PathBuf::from(ESP));
     let mut config =
-        crate::config::parse_bootstrap_config(&fsu::text(Path::new(PACKAGE_CONFIG), 65536)?)?;
-    ensure!(
-        initial.backing == config.backing && initial.kmi == config.kmi,
-        "cpio/package backing or KMI mismatch"
-    );
-    config.safe_mode |= initial.safe_mode
-        || cmdline
-            .split_whitespace()
-            .any(|arg| arg == "egysk.safe_mode=1")
+        crate::config::parse_bootstrap_config(&fsu::text(Path::new(PACKAGE_CONFIG), 65536)?)?
+            .for_boot(initial)?;
+    config.safe_mode |= cmdline
+        .split_whitespace()
+        .any(|arg| arg == "egysk.safe_mode=1")
         || bootconfig
             .lines()
             .any(|line| line.trim() == "egysk.safe_mode = \"1\"");
-    config.norc |= initial.norc;
     fsu::mount(
         MOUNT_SOURCE,
         Path::new(BIN),

@@ -21,6 +21,24 @@ rdinit = ["identity", "storage", "projection"]
 }
 
 #[test]
+fn shared_package_does_not_pin_boots_to_its_initial_kmi() {
+    let package = config();
+    for kmi in ["android16-6.12-6", "android15-6.6-10"] {
+        let mut bootstrap = config();
+        bootstrap.kmi = kmi.into();
+        let selected = package.clone().for_boot(bootstrap).unwrap();
+        assert_eq!(selected.kmi, kmi);
+    }
+}
+
+#[test]
+fn shared_package_cannot_redirect_the_bootstrap_backing() {
+    let mut package = config();
+    package.backing.source = Some("/dev/block/by-name/other-metadata".into());
+    assert!(package.for_boot(config()).is_err());
+}
+
+#[test]
 fn descriptor_roundtrip_retains_exact_selection_and_order() {
     let descriptor = Descriptor {
         version: 1,

@@ -357,12 +357,16 @@ target/release/egysk-build-cpio --build-cpio --legacy-lz4 \
 ```
 
 The bootstrap supplies `egysk.toml`, critical LKMs with compatibility
-receipts, and independent early tools. ESP supplies matching `egysk/egysk.toml`.
-The platform packager keeps its backing
-helper in cpio and stages other tools from raw ESP, not from overlays that those
-tools must construct. The archive contains newc records and optionally legacy
-LZ4; it never supplies `/init`, `ksu_config` or a patched boot image. A branch-only
-KMI selector must resolve to exactly one generation for the requested architecture.
+receipts, and independent early tools. ESP supplies shared `egysk/egysk.toml`
+settings with the same backing identity. The current ramdisk selects the exact
+KMI for module loading; the shared config's initial KMI does not gate another
+ROM's boot. Exact-KMI artifact admission remains a producer/install/OTA concern,
+not a comparison against the shared package's initial selection at boot.
+The platform packager keeps its backing helper in cpio and stages other tools
+from raw ESP, not from overlays that those tools must construct. The archive
+contains newc records and optionally legacy LZ4; it never supplies `/init`,
+`ksu_config` or a patched boot image. A branch-only KMI selector must resolve to
+exactly one generation for the requested architecture.
 
 `egysk-build.json` records architecture, exact KMI, entry and member
 hashes/sizes/permissions. It excludes itself and has no package `build_id` field.
