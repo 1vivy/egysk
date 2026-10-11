@@ -13,6 +13,13 @@ unauthenticated request path.
 An installed root's files, socket, ordinary SU entrypoint and
 lifecycle are not ours to appropriate.
 
+The `egysk` domain intentionally inherits upstream Magisk's broad permissions
+and per-domain permissive setting. System-wide enforcing mode does not confine
+that daemon or module scripts executing in its domain. Separate module service
+domains, including the boot HAL and Gatekeeper, are not made permissive by the
+core policy. Existing SU authorization remains the caller boundary; the core
+does not revoke other policy loaders or reserve another root's `/data/adb`.
+
 Installed modules and supplied policies are trusted privileged code, not a
 sandbox for hostile root modules. Relevant defects include unauthorized stage or
 installer access, archive/path traversal, source/device substitution, namespace

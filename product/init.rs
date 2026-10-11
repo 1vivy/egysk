@@ -88,3 +88,19 @@ on property:sys.boot_completed=1
 "#)
 }
 
+pub fn label_files() {
+    use base::{cstr, pre_order_walk, WalkResult};
+    let root = cstr!("/dev/egysk");
+    let result = (|| -> base::LoggedResult<()> {
+        root.set_secontext(cstr!("u:object_r:egysk_file:s0"))?;
+        pre_order_walk(root, |_, path| {
+            path.set_secontext(cstr!("u:object_r:egysk_file:s0"))?;
+            Ok(WalkResult::Continue)
+        })?;
+        cstr!("/dev/esp").set_secontext(cstr!("u:object_r:egysk_file:s0"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        egysk_runtime::fatal_boot("native runtime labeling failed");
+    }
+}

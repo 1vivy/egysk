@@ -155,7 +155,7 @@ def install_product(tree: Path) -> set[str]:
     )
     destination = tree / "product"
     destination.mkdir()
-    sources = ("identity.json", "dispatch.rs", "init.rs", "init_policy.rs")
+    sources = ("identity.json", "dispatch.rs", "init.rs")
     for name in sources:
         shutil.copy2(PRODUCT / name, destination / name)
     for name, contents in (("identity.rs", rust), ("identity.hpp", cpp)):

@@ -11,6 +11,8 @@ mapper race was corrected in the read-only proof. ROM1 PIN enrollment and
 post-reboot CE unlock pass `20261011T070142Z-credential-enroll`. Enforcing,
 cross-ROM credentials and integrated OTA remain separate qualifications;
 see `gobbl-lab/docs/device-results.md`.
+The restored upstream policy foundation builds for both native architectures and
+passes offline policy composition; it has not yet been boot-qualified on the phone.
 
 ## Ownership
 
@@ -34,6 +36,16 @@ and SELinux identities are distinct from ordinary user root installations.
 Egysk does not claim their `su` entrypoint, forward SU requests, negotiate root
 providers or ship a Manager. Retained upstream authorization is not stripped
 merely because app SU is not the product's purpose.
+
+SELinux uses Magisk's built-in foundation under `egysk`, `egysk_file` and
+`egysk_log_file`, including its broad daemon permissions, ioctl access and
+permissive daemon domain. There is no replacement operation allowlist or second
+bootstrap policy pass. The small integration delta covers early tmpfs/backing
+labels, private efivarfs association, nosuid RC transitions and fatal init handling.
+Other root installations retain their policy loaders and `/data/adb` access.
+Module `sepolicy.rule` files still own service-specific policy; this does not make
+the boot HAL or Gatekeeper domains permissive. SU authorization is unchanged;
+there is no ESP ACL implementation.
 
 ## Boot lifecycle
 

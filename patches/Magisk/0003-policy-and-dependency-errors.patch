@@ -501,201 +501,48 @@ diff --git a/native/src/sepolicy/policydb.cpp b/native/src/sepolicy/policydb.cpp
 diff --git a/native/src/sepolicy/rules.rs b/native/src/sepolicy/rules.rs
 --- a/native/src/sepolicy/rules.rs
 +++ b/native/src/sepolicy/rules.rs
-@@ -1,17 +1,10 @@
- use crate::SePolicy;
- use crate::consts::{SEPOL_FILE_TYPE, SEPOL_LOG_TYPE, SEPOL_PROC_DOMAIN};
--use crate::ffi::Xperm;
- use base::{LogLevel, set_log_level_state};
- 
- macro_rules! rules {
-     (@args all) => {
-         vec![]
--    };
--    (@args xall) => {
--        vec![Xperm { low: 0x0000, high: 0xFFFF, reset: false }]
--    };
--    (@args svcmgr) => {
--        vec!["servicemanager", "vndservicemanager", "hwservicemanager"]
-     };
-     (@args [proc]) => {
-         vec![SEPOL_PROC_DOMAIN]
-@@ -53,90 +46,98 @@
+@@ -53,8 +53,7 @@
          set_log_level_state(LogLevel::Warn, false);
          rules! {
              use self;
 -            // Prevent anything to change sepolicy except ourselves
 -            deny(all, ["kernel"], ["security"], ["load_policy"]);
-+            // Product declarations and operation-scoped permissions. Preserve
-+            // foreign loaders/rules: no global deny and no permissive domain.
++            // Independent root installations retain their own policy loaders.
              type_(proc, ["domain"]);
--            typeattribute([proc], ["mlstrustedsubject", "netdomain", "appdomain"]);
+             typeattribute([proc], ["mlstrustedsubject", "netdomain", "appdomain"]);
              type_(file, ["file_type"]);
--            typeattribute([file], ["mlstrustedobject"]);
-             type_(log, ["file_type"]);
--            typeattribute([log], ["mlstrustedobject"]);
--
--            // Create unconstrained file type
--            allow(["domain"], [file],
--                ["file", "dir", "fifo_file", "chr_file", "lnk_file", "sock_file"], all);
--
--            // Only allow zygote to open log pipe
--            allow(["zygote"], [log], ["fifo_file"], ["open", "read"]);
--            // Allow all processes to output logs
--            allow(["domain"], [log], ["fifo_file"], ["write"]);
--
--            // Make our root domain unconstrained
--            allow([proc], [
--                "fs_type", "dev_type", "file_type", "domain",
--                "service_manager_type", "hwservice_manager_type", "vndservice_manager_type",
--                "port_type", "node_type", "property_type"
--            ], all, all);
--
--            // Just in case, make the domain permissive
--            permissive([proc]);
--
--            // Allow us to do any ioctl
--            allowxperm([proc], ["fs_type", "dev_type", "file_type", "domain"],
--                ["blk_file", "fifo_file", "chr_file"], xall);
--            allowxperm([proc], [proc], ["tcp_socket", "udp_socket", "rawip_socket"], xall);
--
--            // Let binder work with our processes
--            allow(svcmgr, [proc], ["dir"], ["search"]);
--            allow(svcmgr, [proc], ["file"], ["open", "read", "map"]);
--            allow(svcmgr, [proc], ["process"], ["getattr"]);
--            allow(["domain"], [proc], ["binder"], ["call", "transfer"]);
--
--            // Other common IPC
--            allow(["domain"], [proc], ["process"], ["sigchld"]);
--            allow(["domain"], [proc], ["fd"], ["use"]);
--            allow(["domain"], [proc], ["fifo_file"], ["write", "read", "open", "getattr"]);
--
--            // Allow these processes to access MagiskSU and output logs
--            allow(["zygote", "shell", "platform_app",
--                "system_app", "priv_app", "untrusted_app", "untrusted_app_all"],
--                [proc], ["unix_stream_socket"], ["connectto", "getopt"]);
--
--            // Let selected domains access tmpfs files
--            // For tmpfs overlay on 2SI, Zygisk on lower Android versions and AVD scripts
--            allow(["init", "zygote", "shell"], ["tmpfs"], ["file"], all);
--
--            // Allow magiskinit daemon to log to kmsg
--            allow(["kernel"], ["rootfs", "tmpfs"], ["chr_file"], ["write"]);
--
--            // Allow magiskinit daemon to handle mock selinuxfs
--            allow(["kernel"], ["tmpfs"], ["fifo_file"], ["open", "read", "write"]);
--
--            // For relabelling files
--            allow(["rootfs"], ["labeledfs", "tmpfs"], ["filesystem"], ["associate"]);
--            allow([file], ["pipefs", "devpts"], ["filesystem"], ["associate"]);
--            allow(["kernel"], all, ["file"], ["relabelto"]);
--            allow(["kernel"], ["tmpfs"], ["file"], ["relabelfrom"]);
--
--            // Let init transit to SEPOL_PROC_DOMAIN
--            allow(["kernel"], ["kernel"], ["process"], ["setcurrent"]);
--            allow(["kernel"], [proc], ["process"], ["dyntransition"]);
--
--            // Let init run stuffs
--            allow(["init"], [proc], ["process"], all);
--
--            // Zygisk rules
--            allow(["zygote"], ["zygote"], ["process"], ["execmem"]);
--            allow(["domain"], [proc], ["memfd_file"], ["getattr", "read", "write", "map", "execute"]);
--            allow(["zygote"], ["fs_type"], ["filesystem"], ["unmount"]);
--            allow(["system_server"], ["system_server"], ["process"], ["execmem"]);
--
--            // Shut llkd up
--            dontaudit(["llkd"], [proc], ["process"], ["ptrace"]);
--
+@@ -117,6 +116,11 @@
+             allow([file], ["pipefs", "devpts"], ["filesystem"], ["associate"]);
+             allow(["kernel"], all, ["file"], ["relabelto"]);
+             allow(["kernel"], ["tmpfs"], ["file"], ["relabelfrom"]);
++            // Egysk's early tmpfs tree and Unix backing are labeled before handoff.
++            allow([SEPOL_FILE_TYPE, SEPOL_LOG_TYPE], ["tmpfs", "labeledfs"], ["filesystem"], ["associate"]);
++            allow(["kernel"], ["tmpfs"], ["dir", "lnk_file", "fifo_file"], ["relabelfrom"]);
++            // The private efivarfs mount uses context=egysk_file.
++            allow([file], [file], ["filesystem"], ["associate"]);
+ 
+             // Let init transit to SEPOL_PROC_DOMAIN
+             allow(["kernel"], ["kernel"], ["process"], ["setcurrent"]);
+@@ -124,6 +128,11 @@
+ 
+             // Let init run stuffs
+             allow(["init"], [proc], ["process"], all);
++            // Early RC services execute from the nosuid /dev tmpfs.
++            allow(["init"], ["init"], ["process"], ["setcurrent"]);
++            allow(["init"], [proc], ["process2"], ["nosuid_transition"]);
++            // Preserve the fatal early-stage path before a daemon transition.
++            allow(["init"], ["proc_sysrq"], ["file"], ["open", "write"]);
+ 
+             // Zygisk rules
+             allow(["zygote"], ["zygote"], ["process"], ["execmem"]);
+@@ -134,9 +143,7 @@
+             // Shut llkd up
+             dontaudit(["llkd"], [proc], ["process"], ["ptrace"]);
+ 
 -            // Keep /data/adb/* context
 -            deny(["init"], ["adb_data_file"], ["dir"], ["search"]);
 -            deny(["vendor_init"], ["adb_data_file"], ["dir"], ["search"]);
-+            allow([SEPOL_FILE_TYPE, SEPOL_LOG_TYPE], ["tmpfs", "labeledfs"], ["filesystem"], ["associate"]);
-+            // RC services execute from the nosuid product tmpfs and inherit
-+            // init's signal/rlimit state, without granting init worker access.
-+            allow(["init"], ["init"], ["process"], ["setcurrent"]);
-+            allow(["init"], [proc], ["process"], ["transition", "dyntransition", "sigchld", "getattr", "noatsecure", "rlimitinh", "siginh"]);
-+            allow(["init"], [proc], ["process2"], ["nosuid_transition"]);
-+            allow(["init"], [file], ["dir"], ["search", "open", "read", "getattr", "write", "add_name", "create", "setattr"]);
-+            allow(["init"], [file], ["file"], ["open", "read", "execute", "execute_no_trans", "entrypoint", "map", "getattr", "relabelto"]);
-+            // Relabel persisted whiteouts without exposing device I/O.
-+            allow(["init"], [file], ["chr_file"], ["getattr", "relabelfrom", "relabelto"]);
-+            allow(["init"], [proc], ["unix_stream_socket"], ["connectto"]);
-+            allow(["init"], [file], ["sock_file"], ["open", "read", "write", "getattr"]);
-+            allow([proc], ["init"], ["fd"], ["use"]);
-+            allow([proc], ["init"], ["process"], ["sigchld"]);
-+            allow([proc], [proc], ["process"], ["fork", "sigchld", "signal", "sigkill", "getattr", "setcurrent", "dyntransition", "getsched", "setpgid"]);
-+            // /proc/self/{mountinfo,exe,fd,attr/current} carries the process SID.
-+            allow([proc], [proc], ["dir"], ["search", "open", "read", "getattr"]);
-+            allow([proc], [proc], ["file"], ["open", "read", "write", "getattr"]);
-+            allow([proc], [proc], ["lnk_file"], ["read", "getattr"]);
-+            allow([proc], [proc], ["capability"], ["chown", "dac_override", "dac_read_search", "fowner", "fsetid", "setuid", "setgid", "sys_admin", "sys_chroot", "sys_nice", "mknod", "kill"]);
-+            allow([proc], [proc], ["unix_stream_socket"], ["create", "bind", "listen", "accept", "connect", "connectto", "read", "write", "getattr", "setopt", "getopt", "shutdown"]);
-+            allow([proc], [proc], ["unix_dgram_socket"], ["create", "connect", "read", "write", "getattr", "setopt", "getopt"]);
-+            allow([proc], [proc], ["fd"], ["use"]);
-+            allow([proc], [proc], ["fifo_file"], ["create", "open", "read", "write", "getattr", "setattr"]);
-+            allow([proc], [file], ["dir"], ["create", "open", "read", "write", "search", "add_name", "remove_name", "getattr", "setattr", "rmdir", "rename", "reparent", "mounton", "relabelto", "relabelfrom"]);
-+            allow([proc], [file], ["file"], ["create", "open", "read", "write", "append", "map", "execute", "execute_no_trans", "entrypoint", "getattr", "setattr", "unlink", "rename", "link", "ioctl", "lock", "relabelto", "relabelfrom"]);
-+            allow([proc], [file], ["fifo_file"], ["create", "open", "read", "write", "getattr", "setattr", "relabelto", "relabelfrom"]);
-+            allow([proc], [file], ["lnk_file"], ["create", "read", "getattr", "setattr", "unlink", "rename", "relabelto", "relabelfrom"]);
-+            allow([proc], [file], ["sock_file"], ["create", "open", "read", "write", "getattr", "setattr", "unlink", "relabelto", "relabelfrom"]);
-+            // OverlayFS creates, links and removes 0:0 character-device whiteouts.
-+            allow([proc], [file], ["chr_file"], ["create", "getattr", "setattr", "unlink", "rename", "link", "relabelfrom", "relabelto"]);
-+            allow([proc], [log], ["fifo_file"], ["create", "open", "read", "write", "getattr", "setattr", "unlink", "relabelto", "relabelfrom"]);
-+            // Projection must read target attributes and bind module exports at
-+            // their original Android contexts, without making those domains egysk.
-+            allow([proc], ["file_type"], ["dir"], ["open", "read", "search", "getattr", "mounton"]);
-+            allow([proc], ["file_type"], ["file"], ["open", "read", "getattr", "map", "mounton", "relabelto", "relabelfrom"]);
-+            // Copy-up and worker entries carry their Android export labels.
-+            // Mirrored placeholders are opened read-only; mkdir/clone_attr and
-+            // symlink creation must work with arbitrary Android export labels
-+            // (CF17: aconfig, perfetto, seccomp and cacerts), not just system_file.
-+            // Do not generalize file writes or execution to file_type.
-+            allow([proc], ["file_type"], ["dir"], ["create", "write", "add_name", "setattr", "relabelto", "relabelfrom"]);
-+            allow([proc], ["file_type"], ["file"], ["create", "setattr"]);
-+            allow([proc], ["file_type"], ["lnk_file"], ["create", "setattr"]);
-+            allow([proc], ["system_file", "vendor_file"], ["dir"], ["create", "write", "add_name", "remove_name", "setattr", "rmdir", "rename", "relabelto", "relabelfrom"]);
-+            allow([proc], ["system_file", "vendor_file"], ["file"], ["create", "write", "append", "setattr", "unlink", "rename", "link", "execute", "execute_no_trans"]);
-+            allow([proc], ["system_file", "vendor_file"], ["lnk_file"], ["create", "setattr", "unlink", "rename"]);
-+            allow([proc], ["file_type"], ["lnk_file"], ["read", "getattr", "relabelto", "relabelfrom"]);
-+            allow([proc], ["system_file", "vendor_file", "shell_exec", "toolbox_exec"], ["file"], ["execute", "execute_no_trans"]);
-+            allow([proc], ["tmpfs"], ["dir"], ["create", "open", "read", "write", "search", "getattr", "setattr", "add_name", "remove_name", "mounton", "relabelto", "relabelfrom"]);
-+            allow([proc], ["tmpfs"], ["file"], ["create", "open", "read", "write", "getattr", "setattr", "mounton", "relabelto", "relabelfrom"]);
-+            allow([proc], ["tmpfs"], ["lnk_file"], ["create", "read", "getattr", "setattr", "relabelto", "relabelfrom"]);
-+            allow([proc], ["fs_type"], ["filesystem"], ["mount", "remount", "unmount", "getattr"]);
-+            allow([proc], ["rootfs", "tmpfs"], ["filesystem"], ["associate"]);
-+            // context=egysk_file labels the efivarfs superblock and its inodes.
-+            allow([proc], ["sysfs"], ["dir"], ["mounton"]);
-+            allow([proc], ["unlabeled", SEPOL_FILE_TYPE], ["filesystem"], ["relabelfrom"]);
-+            allow([proc], [file], ["filesystem"], ["mount", "unmount", "getattr", "relabelto"]);
-+            allow([file], [file], ["filesystem"], ["associate"]);
-+            allow([proc], ["proc"], ["dir"], ["search", "open", "read", "getattr"]);
-+            allow([proc], ["proc"], ["file"], ["open", "read", "getattr"]);
-+            // Fatal stage failures must leave a kernel crash, not a quiet reboot.
-+            allow([proc], ["proc_sysrq"], ["file"], ["open", "write"]);
-+            // Native detaches from the blocking init client's cgroup before exit.
-+            allow([proc], ["cgroup", "cgroup_v2"], ["dir"], ["search", "getattr"]);
-+            allow([proc], ["cgroup", "cgroup_v2"], ["file"], ["open", "write", "append", "getattr"]);
-+            // Raw ESP content is read before projection/relabeling. No FAT writes.
-+            allow([proc], ["vfat"], ["dir"], ["search", "open", "read", "getattr"]);
-+            allow([proc], ["vfat"], ["file"], ["open", "read", "getattr"]);
-+            // Selected metadata starts unlabeled; create and relabel its
-+            // password_slots directory, without allowing unlabeled file writes.
-+            allow([proc], ["unlabeled"], ["dir"], ["search", "getattr", "write", "add_name", "create", "setattr", "relabelfrom"]);
-+            // Storage discovery reads block topology/dev numbers and /proc/misc.
-+            allow([proc], ["sysfs_block", "sysfs_dm", "sysfs_loop", "sysfs_devices_block", "sysfs_zram"], ["dir"], ["search", "open", "read", "getattr"]);
-+            allow([proc], ["sysfs_block", "sysfs_dm", "sysfs_loop", "sysfs_devices_block", "sysfs_zram", "sysfs_zram_uevent", "proc_misc", "proc_filesystems"], ["file"], ["open", "read", "getattr"]);
-+            allow([proc], ["null_device", "zero_device"], ["chr_file"], ["open", "read", "write", "getattr", "ioctl"]);
-+            allow([proc], ["kmsg_device"], ["chr_file"], ["open", "write"]);
-+            allow([proc], ["selinuxfs"], ["file"], ["open", "read", "write", "getattr"]);
-+            allow([proc], ["kernel"], ["security"], ["load_policy", "read_policy", "compute_av", "check_context"]);
-+            allow([proc], ["property_socket"], ["sock_file"], ["write"]);
-+            allow([proc], ["init"], ["unix_stream_socket"], ["connectto"]);
-+            // resetprop is the staged direct-property tool used by platform modules.
-+            allow([proc], ["property_type"], ["file"], ["open", "read", "write", "map", "getattr"]);
-+            // resetprop updates the shared serial area as well as property values.
-+            allow([proc], ["properties_serial"], ["file"], ["open", "read", "write", "map", "getattr"]);
-+            allow([proc], ["logd"], ["unix_dgram_socket"], ["sendto"]);
-+            allow([proc], ["logdw_socket"], ["sock_file"], ["write"]);
++            // /data/adb belongs to other root installations, not Egysk.
          }
  
          #[cfg(any())]
