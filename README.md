@@ -8,11 +8,13 @@ and ordinary module stages, retained magic-mount exports and the boot HAL.
 `20261011T064905Z-phone-rdinit-proof` passes on the boot captured by
 `20261011T064735Z-phone-loop`; the initial loop's unrelated transient APEX
 mapper race was corrected in the read-only proof. ROM1 PIN enrollment and
-post-reboot CE unlock pass `20261011T070142Z-credential-enroll`. Enforcing,
-cross-ROM credentials and integrated OTA remain separate qualifications;
+post-reboot CE unlock pass `20261011T070142Z-credential-enroll`. Cross-ROM
+credentials and integrated OTA remain separate qualifications;
 see `gobbl-lab/docs/device-results.md`.
-The restored upstream policy foundation builds for both native architectures and
-passes offline policy composition; it has not yet been boot-qualified on the phone.
+The restored upstream policy foundation and generic Gatekeeper passed enforcing
+ROM1 boot and existing-PIN unlock in `20261011T165211Z-phone-gatekeeper-live`.
+Managed ROM2 recovery still hangs before USB after the startup corrections below;
+see `20261011T194912Z-phone-rom2-install`. It is not boot-qualified.
 
 ## Ownership
 
@@ -52,6 +54,14 @@ there is no ESP ACL implementation.
 The consumer selects `rdinit=/egyskinit`. The archive deliberately has no
 `/init`: Magiskinit uses the current boot's stock initializer through its normal
 RAM backup/restore and handoff, never a bundled initializer from another ROM.
+
+The bootloader selects the normal or recovery ramdisk. Egysk therefore leaves
+upstream's recovery-as-boot installation flag `RECOVERYMODE=false`; setting it
+from the current recovery mode would select legacy system-as-root and can wait
+forever for a system partition under `rootwait`. Relative `/init` symlinks are
+resolved before backup so moving the backup cannot change their target.
+Early module preparation precedes upstream's recovery handoff; it does not
+convert recovery into the normal Android daemon lifecycle.
 
 1. Magiskinit invokes the boot-payload `lkm-loader` module's `pid1.sh` before
    first-stage mounts. The module loads stock vendor dependencies, then its

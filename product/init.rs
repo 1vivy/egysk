@@ -50,12 +50,17 @@ fn early_impl() -> Result<(), Box<dyn std::error::Error>> {
     // Use upstream's ordinary backup/restore and second-stage interception. The
     // backup comes from this boot's /init, never an archive's stale firmware init.
     std::fs::create_dir_all("/.egysk-backup")?;
-    std::fs::write("/.egysk-backup/.magisk", if storage.mode == BootMode::Recovery {
-        "RECOVERYMODE=true\n"
+    // RECOVERYMODE is upstream's recovery-as-boot installation flag, not the
+    // current Android mode. Our bootloader already selected the right ramdisk.
+    std::fs::write("/.egysk-backup/.magisk", "RECOVERYMODE=false\n")?;
+    if std::fs::symlink_metadata("/init")?.file_type().is_symlink() {
+        // Moving a relative link into the backup directory changes its target.
+        let original = std::fs::canonicalize("/init")?;
+        std::os::unix::fs::symlink(original, "/.egysk-backup/init")?;
+        std::fs::remove_file("/init")?;
     } else {
-        "RECOVERYMODE=false\n"
-    })?;
-    std::fs::rename("/init", "/.egysk-backup/init")?;
+        std::fs::rename("/init", "/.egysk-backup/init")?;
+    }
     std::fs::copy("/proc/self/exe", "/init")?;
     Ok(())
 }
