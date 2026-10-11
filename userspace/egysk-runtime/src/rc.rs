@@ -2,6 +2,7 @@
 //! admitted module actions last. The complete descriptor lives in the RC bytes.
 use crate::context::*;
 use crate::fsutil as fsu;
+use crate::helper::FATAL_REBOOT_TARGET;
 use anyhow::{Context, Result, ensure};
 use std::fmt::Write;
 use std::path::Path;
@@ -161,7 +162,7 @@ fn bootstrap_step(
 ) -> std::fmt::Result {
     write!(
         rc,
-        "\nservice egysk.bootstrap-{name} {command}\n    user root\n    group root\n    seclabel u:r:init:s0\n    disabled\n    oneshot\n    timeout_period 120\n    reboot_on_failure reboot\n\non init\n    exec_start egysk.bootstrap-{name}\n"
+        "\nservice egysk.bootstrap-{name} {command}\n    user root\n    group root\n    seclabel u:r:init:s0\n    disabled\n    oneshot\n    timeout_period 120\n    reboot_on_failure reboot,{FATAL_REBOOT_TARGET}\n\non init\n    exec_start egysk.bootstrap-{name}\n"
     )
 }
 
@@ -242,7 +243,7 @@ pub fn assemble(
     for stage in crate::Stage::ALL {
         writeln!(
             rc,
-            "\nservice egysk.stage-{} {BIN}/{DAEMON} --egysk-stage {}\n    user root\n    group root\n    seclabel {DOMAIN}\n    disabled\n    oneshot\n    timeout_period 300\n    reboot_on_failure reboot",
+            "\nservice egysk.stage-{} {BIN}/{DAEMON} --egysk-stage {}\n    user root\n    group root\n    seclabel {DOMAIN}\n    disabled\n    oneshot\n    timeout_period 300\n    reboot_on_failure reboot,{FATAL_REBOOT_TARGET}",
             stage.as_str(),
             stage.as_str(),
         )?;

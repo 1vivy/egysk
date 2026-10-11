@@ -9,6 +9,8 @@ static const __u32 EGYSK_UAPI_VERSION = 4;
 static const __u32 EGYSK_INSTALL_MAGIC1 = 0x45535049; /* ESPI */
 static const __u32 EGYSK_INSTALL_MAGIC2 = 0x4e495446; /* NITF */
 #define EGYSK_CONTROL_NAME "[egysk]"
+/* Reserved for init's reboot_on_failure; the helper turns it into a panic. */
+#define EGYSK_FATAL_REBOOT_TARGET "egysk-fatal"
 static const __u32 EGYSK_GET_INFO_FLAG_LKM = (1U << 0);
 static const __u32 EGYSK_STATE_READY = (1U << 0);
 

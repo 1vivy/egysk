@@ -5,7 +5,9 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/kprobes.h>
+#include <linux/panic.h>
 #include <linux/pid.h>
+#include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
 #include <linux/task_work.h>
@@ -84,6 +86,21 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
     struct pt_regs *real_regs = PT_REAL_REGS(regs);
     int magic1 = (int)PT_REGS_SYSCALL_PARM1(real_regs);
     int magic2 = (int)PT_REGS_PARM2(real_regs);
+
+    /* Android's reboot_on_failure does not use init_fatal_panic. Preserve
+     * failures in our prerequisite services as crashes, without changing
+     * ordinary reboots. This probe cannot fault while reading the target.
+     */
+    if (magic1 == LINUX_REBOOT_MAGIC1 && magic2 == LINUX_REBOOT_MAGIC2 &&
+        (unsigned int)PT_REGS_PARM3(real_regs) == LINUX_REBOOT_CMD_RESTART2 && task_tgid_nr(current) == 1 &&
+        uid_eq(current_euid(), GLOBAL_ROOT_UID)) {
+        char target[sizeof(EGYSK_FATAL_REBOOT_TARGET)];
+        const void __user *arg = (const void __user *)PT_REGS_SYSCALL_PARM4(real_regs);
+
+        if (!copy_from_user_nofault(target, arg, sizeof(target)) &&
+            !memcmp(target, EGYSK_FATAL_REBOOT_TARGET, sizeof(target)))
+            panic("egysk prerequisite failed: init requested " EGYSK_FATAL_REBOOT_TARGET);
+    }
 
     if (magic1 == EGYSK_INSTALL_MAGIC1 && magic2 == EGYSK_INSTALL_MAGIC2 && uid_eq(current_euid(), GLOBAL_ROOT_UID)) {
         struct ksu_install_fd_tw *tw;

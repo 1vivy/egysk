@@ -5,6 +5,7 @@ pub(super) const UAPI_VERSION: u32 = 4;
 pub(super) const INSTALL_MAGIC1: u32 = 0x45535049;
 pub(super) const INSTALL_MAGIC2: u32 = 0x4e495446;
 pub(super) const CONTROL_NAME: &str = "[egysk]";
+pub(crate) const FATAL_REBOOT_TARGET: &str = "egysk-fatal";
 pub(super) const STATE_READY: u32 = 1 << 0;
 pub(super) const GET_INFO: u32 = 0x80104502;
 pub(super) const SET_MODULE_RC: u32 = 0x40104515;

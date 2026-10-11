@@ -292,7 +292,7 @@ pub fn skip_mount(id: &str) -> Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("module {id} is not admitted"))
 }
 
-/// Generic fail-closed reboot-and-park. No BCB, ROM selector or root-provider report.
+/// Stop a failed boot with a kernel panic, preserving the cause for crash capture.
 pub fn fatal_boot(message: &str) -> ! {
     use std::io::{IoSlice, Write};
     log::error!("egysk fatal boot: {message}");
@@ -309,17 +309,21 @@ pub fn fatal_boot(message: &str) -> ! {
             message.as_bytes().get(..4096).unwrap_or(message.as_bytes()),
         );
     }
-    unsafe {
-        libc::sync();
-        // Linux reboot(2) ABI; bionic does not export libc's reboot wrapper.
-        libc::syscall(
-            libc::SYS_reboot,
-            0xfee1deadu32,
-            0x28121969u32,
-            0x01234567u32,
-            std::ptr::null::<libc::c_void>(),
-        );
+    // PID 1 exiting panics even when rdinit has already unmounted /proc.
+    // SAFETY: getpid has no preconditions; _exit does not return or run destructors.
+    if unsafe { libc::getpid() } == 1 {
+        unsafe { libc::_exit(1) }
     }
+    // Native stage workers are not PID 1. Use the same kernel panic control as
+    // Android's init_fatal_panic, rather than rebooting away the failure.
+    let panic = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/sysrq-trigger")
+        .and_then(|mut trigger| trigger.write_all(b"c"));
+    if let Err(error) = panic {
+        log::error!("egysk fatal boot: kernel panic request failed: {error}");
+    }
+    // Never continue the stage or substitute a silent reboot if panic is denied.
     loop {
         std::thread::park_timeout(std::time::Duration::from_secs(3600));
     }

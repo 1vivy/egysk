@@ -519,7 +519,7 @@ diff --git a/native/src/sepolicy/rules.rs b/native/src/sepolicy/rules.rs
      };
      (@args [proc]) => {
          vec![SEPOL_PROC_DOMAIN]
-@@ -53,90 +46,101 @@
+@@ -53,90 +46,103 @@
          set_log_level_state(LogLevel::Warn, false);
          rules! {
              use self;
@@ -670,6 +670,8 @@ diff --git a/native/src/sepolicy/rules.rs b/native/src/sepolicy/rules.rs
 +            allow([file], [file], ["filesystem"], ["associate"]);
 +            allow([proc], ["proc"], ["dir"], ["search", "open", "read", "getattr"]);
 +            allow([proc], ["proc"], ["file"], ["open", "read", "getattr"]);
++            // Fatal stage failures must leave a kernel crash, not a quiet reboot.
++            allow([proc], ["proc_sysrq"], ["file"], ["open", "write"]);
 +            // Native detaches from the blocking init client's cgroup before exit.
 +            allow([proc], ["cgroup", "cgroup_v2"], ["dir"], ["search", "getattr"]);
 +            allow([proc], ["cgroup", "cgroup_v2"], ["file"], ["open", "write", "append", "getattr"]);

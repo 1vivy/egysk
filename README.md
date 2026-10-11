@@ -133,9 +133,16 @@ before product dispatch. Every logical stage uses a disabled named oneshot,
 `wait_for_prop egysk.stage.<stage> 1`. Only the serialized native completion
 boundary publishes stage success, after native callbacks/projection and module
 work; it acknowledges duplicate dispatch only after publication succeeds.
-Failed execution requests, unsuccessful exits and timeouts reboot; even a
-service lookup failure cannot advance stock same-event actions past an absent
-success property. A failed reboot leaves the consumer barrier closed.
+Fatal Egysk errors log their cause and panic: rdinit exits as PID 1 (also after
+`/proc` teardown), while native workers write SysRq `c`. A denied panic leaves
+the consumer barrier closed; it never falls back to a quiet reboot.
+The generated service guards use `reboot_on_failure reboot,egysk-fatal`. The
+helper converts that exact, NUL-terminated restart target from root PID 1 into a
+kernel panic, covering failed execution requests, unsuccessful exits and
+timeouts without changing ordinary reboots. Lookup failures cannot advance
+stock same-event actions past an absent success property.
+Android init's own aborts are separate: diagnostic boots pass
+`androidboot.init_fatal_panic=true` to preserve those failures as crashes too.
 Selected block nodes live under `/dev/block` with mode 0600. The helper's initial
 policy allows copying, relabelling, backing mounts and native policy load;
 it does not make the product domain permissive.

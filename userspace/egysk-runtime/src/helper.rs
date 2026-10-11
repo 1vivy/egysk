@@ -3,6 +3,7 @@ use anyhow::{Context, Result, ensure};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 mod abi;
+pub(crate) use abi::FATAL_REBOOT_TARGET;
 pub use abi::Info;
 use abi::*;
 fn control() -> Result<OwnedFd> {
