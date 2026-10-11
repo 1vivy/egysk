@@ -7,8 +7,10 @@ admission. Payload `1b47402f1ff6` boots the phone permissively with native early
 and ordinary module stages, retained magic-mount exports and the boot HAL.
 `20261011T064905Z-phone-rdinit-proof` passes on the boot captured by
 `20261011T064735Z-phone-loop`; the initial loop's unrelated transient APEX
-mapper race was corrected in the read-only proof. Enforcing and credential/OTA
-operations remain separate qualifications; see `gobbl-lab/docs/device-results.md`.
+mapper race was corrected in the read-only proof. ROM1 PIN enrollment and
+post-reboot CE unlock pass `20261011T070142Z-credential-enroll`. Enforcing,
+cross-ROM credentials and integrated OTA remain separate qualifications;
+see `gobbl-lab/docs/device-results.md`.
 
 ## Ownership
 
