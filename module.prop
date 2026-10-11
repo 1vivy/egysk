@@ -1,0 +1,6 @@
+id=lkm-loader
+name=Early LKM loader
+version=1
+versionCode=1
+author=Egysk
+description=Load stock vendor and ordered boot-payload kernel modules before first-stage mounts
