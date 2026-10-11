@@ -13,8 +13,11 @@ credentials and integrated OTA remain separate qualifications;
 see `gobbl-lab/docs/device-results.md`.
 The restored upstream policy foundation and generic Gatekeeper passed enforcing
 ROM1 boot and existing-PIN unlock in `20261011T165211Z-phone-gatekeeper-live`.
-Managed ROM2 recovery still hangs before USB after the startup corrections below;
-see `20261011T194912Z-phone-rom2-install`. It is not boot-qualified.
+ROM2 recovery completes native module stages with root ADB, enforcing SELinux,
+sealed projection and its own logical slot. The managed AIDL HAL starts through
+the ordinary post-fs action in `20261011T194912Z-phone-rom2-install`.
+The bounded diagnostic archive was replaced by the untimed producer archive.
+ROM2 normal boot, fastbootd, cross-ROM credentials and OTA remain separate proofs.
 
 ## Ownership
 
@@ -60,8 +63,17 @@ upstream's recovery-as-boot installation flag `RECOVERYMODE=false`; setting it
 from the current recovery mode would select legacy system-as-root and can wait
 forever for a system partition under `rootwait`. Relative `/init` symlinks are
 resolved before backup so moving the backup cannot change their target.
-Early module preparation precedes upstream's recovery handoff; it does not
-convert recovery into the normal Android daemon lifecycle.
+Managed recovery retains the same upstream SELinux/rootdir interception and
+admitted module lifecycle. Two-stage recovery uses the original init's direct
+second-stage exec rather than the normal Android switch-root mount trick;
+interception targets `/init.real` when present, matching upstream's two-stage
+detection rather than patching an outer init wrapper. Otherwise it targets `/init`;
+legacy recovery uses the rootfs path. Ramdisk rootfs modifies RC files directly;
+read-only roots use bind overlays. Egysk does not mount normal Android's system
+root to reach recovery. Charger mode still bypasses interception.
+The native projector accepts recovery's ramdisk `/system` using the retained
+boot mode; normal Android still requires its mounted filesystem before early
+module projection.
 
 1. Magiskinit invokes the boot-payload `lkm-loader` module's `pid1.sh` before
    first-stage mounts. The module loads stock vendor dependencies, then its
@@ -72,8 +84,11 @@ convert recovery into the normal Android daemon lifecycle.
 3. Magiskinit integrates module policy and raw module RC through its upstream
    SELinux/rootdir path. Early views are released before handoff.
 4. After stock early-init, coldboot and bootstrap APEX setup, the Magisk daemon
-   reconstructs storage at the front of Android's init event. Native blocking
-   callbacks run early module stages before the corresponding stock consumers.
+   reconstructs storage at the front of the init event, including recovery.
+   Native blocking callbacks run early module stages before the corresponding
+   stock consumers. In recovery, native callbacks are registered first, then
+   admitted module RC, then stock RC, so module actions also precede stock actions
+   on each event. Normal Android retains its existing module RC ordering.
 5. Upstream module collection, stage serialization, magic mount and later
    post-fs-data/service/boot-completed work remain the single lifecycle.
 

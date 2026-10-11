@@ -10,6 +10,10 @@ static STORAGE: LazyLock<egysk_runtime::storage::Storage> = LazyLock::new(|| {
     })
 });
 
+pub fn is_recovery() -> bool {
+    STORAGE.mode == egysk_runtime::context::BootMode::Recovery
+}
+
 pub fn hooks(stage: &str, modules: &Vec<ModuleInfo>) {
     let storage = &*STORAGE;
     exec_module_scripts(&Utf8CString::from(stage), modules);

@@ -819,7 +819,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  
      if zygisk_enabled && open_zygisk {
          let mut use_memfd = true;
-@@ -816,26 +733,81 @@
+@@ -816,26 +733,83 @@
          });
      }
  
@@ -888,7 +888,9 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 +            .max_by_key(|mount| mount.target.len()).is_some_and(|mount| {
 +                !matches!(mount.fs_type.as_str(), "tmpfs" | "devtmpfs" | "rootfs")
 +            });
-+        if !system.is_dir() || (!replace_early && !backed) {
++        // Recovery's /system is part of its ramdisk, not a block-backed Android root.
++        let recovery = crate::bootstages::product_events::is_recovery();
++        if !system.is_dir() || (!replace_early && !backed && !recovery) {
 +            egysk_runtime::fatal_boot("native projection before Android filesystem");
 +        }
 +        if replace_early {
@@ -910,7 +912,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
          let mut system = FsNode::new_dir();
  
          // Create buffers for paths
-@@ -860,18 +832,16 @@
+@@ -860,18 +834,16 @@
              }
              drop(prop);
  
@@ -932,7 +934,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              }
          }
  
-@@ -883,12 +853,14 @@
+@@ -883,12 +855,14 @@
          // We directly inject file nodes into the virtual filesystem tree we built in the previous
          // step, treating Magisk just like a special "module".
  
@@ -949,7 +951,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              let mut zygisk = self.zygisk.lock();
              zygisk.set_prop();
              inject_zygisk_bins(&zygisk.lib_name, &mut system);
-@@ -930,7 +902,8 @@
+@@ -930,7 +904,8 @@
              // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
  
              let paths = paths.append(dir);

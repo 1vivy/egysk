@@ -74,6 +74,11 @@ diff --git a/native/src/init/lib.rs b/native/src/init/lib.rs
          fn backup_init() -> Utf8CStrRef<'static>;
  
          // Constants
+@@ -93,3 +94,2 @@
+         fn mount_system_root(self: &mut MagiskInit) -> bool;
+-        fn patch_rw_root(self: &mut MagiskInit);
+-        fn patch_ro_root(self: &mut MagiskInit);
++        fn patch_root(self: &mut MagiskInit, writable: bool);
 diff --git a/native/src/init/init.rs b/native/src/init/init.rs
 --- a/native/src/init/init.rs
 +++ b/native/src/init/init.rs
@@ -88,7 +93,49 @@ diff --git a/native/src/init/init.rs b/native/src/init/init.rs
  use base::{LibcReturn, LoggedResult, ResultExt, cstr, info, raw_cstr};
  use std::ffi::{CStr, c_char};
  use std::ptr::null;
-@@ -91,7 +91,7 @@
+@@ -64,7 +64,7 @@
+             init_path
+                 .create_symlink_to(cstr!("/system/bin/init"))
+                 .log_ok();
+-            self.patch_rw_root();
++            self.patch_root(true);
+         } else {
+-            self.patch_ro_root();
++            self.patch_root(false);
+         }
+@@ -77,7 +77,7 @@
+         if is_two_stage {
+             hexpatch_init_for_second_stage(false);
+         } else {
+-            self.patch_ro_root();
++            self.patch_root(false);
+         }
+     }
+ 
+@@ -84,7 +84,7 @@
+     fn rootfs(&mut self) {
+         info!("RootFS Init");
+         self.prepare_data();
+         self.restore_ramdisk_init();
+-        self.patch_rw_root();
++        self.patch_root(true);
+     }
+ 
+@@ -91,7 +91,21 @@
++    fn recovery(&mut self) {
++        info!("Recovery Init");
++        self.prepare_data();
++        let is_two_stage = self.check_two_stage();
++        self.restore_ramdisk_init();
++        if is_two_stage {
++            // Recovery skips normal Android's SwitchRoot; intercept its direct
++            // second-stage exec instead, including /init -> /init.real.
++            hexpatch_init_for_second_stage(true);
++        } else {
++            self.patch_root(true);
++        }
++    }
++
      fn recovery_or_charger(&self) {
          info!("Charger mode or ramdisk is recovery, abort");
          self.restore_ramdisk_init();
@@ -97,7 +144,7 @@ diff --git a/native/src/init/init.rs b/native/src/init/init.rs
      }
  
      fn restore_ramdisk_init(&self) {
-@@ -102,12 +102,7 @@
+@@ -102,12 +116,7 @@
          if orig_init.exists() {
              orig_init.rename_to(cstr!("/init")).log_ok();
          } else {
@@ -111,7 +158,7 @@ diff --git a/native/src/init/init.rs b/native/src/init/init.rs
          }
      }
  
-@@ -143,6 +138,10 @@
+@@ -143,6 +152,10 @@
  
          setup_klog();
  
@@ -122,7 +169,17 @@ diff --git a/native/src/init/init.rs b/native/src/init/init.rs
          self.config.init();
  
          let argv1 = unsafe { *self.argv.offset(1) };
-@@ -178,21 +177,17 @@
+@@ -162,8 +175,8 @@
+         } else if cstr!("/sbin/recovery").exists()
+             || cstr!("/system/bin/recovery").exists()
+         {
+-            self.recovery_or_charger();
++            self.recovery();
+         } else if self.check_two_stage() {
+             self.first_stage();
+         } else {
+             self.rootfs();
+@@ -178,21 +191,17 @@
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn main(
@@ -197,7 +254,7 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
      int src_fd = dirfd(src_dir.get());
  
      // If writable, directly modify the file in src_path, or else add to rootfs overlay
-@@ -55,18 +29,19 @@
+@@ -55,18 +29,29 @@
          xmkdirs(buf, 0755);
          return xopen_dir(buf);
      }();
@@ -217,20 +274,36 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
 +        if (!dest_rc) exit(1);
          LOGD("Patching " INIT_RC " in %s\n", src_path);
 +        rust::inject_magisk_rc(fileno(dest_rc.get()), tmp_path);
++        auto inject_module_rc = [&] {
++            for (auto &script : rc_list) {
++                replace_all(script, "${MAGISKTMP}", tmp_path);
++                fprintf(dest_rc.get(), "\n%s\n", script.data());
++            }
++            rc_list.clear();
++        };
++        // Recovery module actions must precede stock recovery consumers.
++        if (access("/sbin/recovery", F_OK) == 0 || access("/system/bin/recovery", F_OK) == 0)
++            inject_module_rc();
          file_readline(src_rc, [&dest_rc](Utf8CStr line) -> bool {
              // Do not start vaultkeeper
              if (line.sv().contains("start vaultkeeper")) {
-@@ -100,8 +75,7 @@
-         }
-         rc_list.clear();
+@@ -93,13 +78,5 @@
+         fprintf(dest_rc.get(), "\n");
  
+-        // Inject custom rc scripts
+-        for (auto &script : rc_list) {
+-            // Replace template arguments of rc scripts with dynamic paths
+-            replace_all(script, "${MAGISKTMP}", tmp_path);
+-            fprintf(dest_rc.get(), "\n%s\n", script.data());
+-        }
+-        rc_list.clear();
+-
 -        // Inject Magisk rc scripts
 -        rust::inject_magisk_rc(fileno(dest_rc.get()), tmp_path);
-+        // Native actions were registered before stock actions above.
++        // Keep normal Android module RC ordering; recovery's list is now empty.
++        inject_module_rc();
  
-         fclone_attr(src_rc, fileno(dest_rc.get()));
-     }
-@@ -124,7 +98,7 @@
+@@ -124,7 +101,7 @@
                  LOGD("Inject zygote restart\n");
                  fprintf(dest_rc.get(), "%s", line.c_str());
                  fprintf(dest_rc.get(),
@@ -239,7 +312,7 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
                  return true;
              }
              fprintf(dest_rc.get(), "%s", line.c_str());
-@@ -202,93 +176,27 @@
+@@ -202,93 +179,27 @@
      }
  }
  
@@ -308,7 +381,8 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
 +    cp_afc("bin/init-ld", "init-ld");
  }
  
- void MagiskInit::patch_ro_root() noexcept {
+-void MagiskInit::patch_ro_root() noexcept {
++void MagiskInit::patch_root(bool writable) noexcept {
      mount_list.emplace_back("/data");
      parse_config_file();
  
@@ -345,7 +419,7 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
  
      extern bool avd_hack;
      // Handle avd hack
-@@ -308,7 +216,7 @@
+@@ -308,7 +219,7 @@
  
      load_overlay_rc(ROOTOVL);
      if (access(ROOTOVL "/sbin", F_OK) == 0) {
@@ -354,14 +428,34 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
          mv_path(ROOTOVL "/sbin", ".");
      }
  
-@@ -334,83 +242,10 @@
+@@ -315,9 +226,11 @@
++    if (writable) mv_path(ROOTOVL, "/");
++
+     // Patch init.rc
+     bool p;
+     if (access(NEW_INITRC_DIR "/" INIT_RC, F_OK) == 0) {
+         // Android 11's new init.rc
+-        p = patch_rc_scripts(NEW_INITRC_DIR, tmp_dir.data(), false);
++        p = patch_rc_scripts(NEW_INITRC_DIR, tmp_dir.data(), writable);
+     } else {
+-        p = patch_rc_scripts("/", tmp_dir.data(), false);
++        p = patch_rc_scripts("/", tmp_dir.data(), writable);
+     }
+     if (p) patch_fissiond(tmp_dir.data());
+@@ -330,4 +243,4 @@
+ 
+     // Mount rootdir
+-    mount_overlay("/");
++    if (!writable) mount_overlay("/");
+ 
+@@ -334,83 +247,6 @@
      chdir("/");
  }
  
 -#define PRE_TMPSRC "/magisk"
 -#define PRE_TMPDIR PRE_TMPSRC "/tmp"
 -
- void MagiskInit::patch_rw_root() noexcept {
+-void MagiskInit::patch_rw_root() noexcept {
 -    mount_list.emplace_back("/data");
 -    parse_config_file();
 -
@@ -431,9 +525,8 @@ diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
 -    close(fd);
 -    clone_attr(init_xz, init);
 -    unlink(init_xz);
-+    patch_ro_root();
- }
- 
+-}
+-
  Utf8CStr backup_init() {
 -    if (access("/.backup/init.xz", F_OK) == 0)
 -        unxz_init("/.backup/init.xz", "/.backup/init");
@@ -626,7 +719,28 @@ diff --git a/native/src/init/getinfo.cpp b/native/src/init/getinfo.cpp
 diff --git a/native/src/init/twostage.rs b/native/src/init/twostage.rs
 --- a/native/src/init/twostage.rs
 +++ b/native/src/init/twostage.rs
-@@ -17,7 +17,7 @@
+@@ -6,11 +6,17 @@
+ pub(crate) fn hexpatch_init_for_second_stage(writable: bool) {
++    // Match check_two_stage's stock-init selection behind a ramdisk wrapper.
++    let path = if cstr!("/init.real").exists() {
++        cstr!("/init.real")
++    } else {
++        cstr!("/init")
++    };
+     let init = if writable {
+-        MappedFile::open_rw(cstr!("/init"))
++        MappedFile::open_rw(path)
+     } else {
+-        MappedFile::open(cstr!("/init"))
++        MappedFile::open(path)
+     };
+ 
+     let Ok(mut init) = init else {
+-        error!("Failed to open /init for hexpatch");
++        error!("Failed to open {path} for hexpatch");
+         return;
+     };
+@@ -17,7 +23,7 @@
  
      // Redirect original init to magiskinit
      let from = "/system/bin/init";
@@ -635,7 +749,16 @@ diff --git a/native/src/init/twostage.rs b/native/src/init/twostage.rs
      let v = init.patch(from.as_bytes(), to.as_bytes());
      #[allow(unused_variables)]
      for off in &v {
-@@ -95,10 +95,10 @@
+@@ -27,7 +33,7 @@
+     if !writable {
+         // If we cannot directly modify /init, we need to bind mount a replacement on top of it
+-        let src = cstr!("/init");
++        let src = path;
+         let dest = cstr!("/data/init");
+         let _ = || -> LoggedResult<()> {
+             {
+                 let mut fd = dest.create(OFlag::O_CREAT | OFlag::O_WRONLY, 0)?;
+@@ -95,10 +101,10 @@
              debug!("Bind mount /sdcard -> /sdcard");
          } else {
              // Binding mounting from rootfs is not supported before Linux 3.12
