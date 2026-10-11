@@ -62,6 +62,7 @@ load before ESP discovery. Gobbl-generated launchers select
 /dev/esp/esu/                    independent downstream schema-2 ROM configuration
 /dev/egysk/bin/                  executable tmpfs tools
 /dev/egysk/store/                shared physical-metadata product subtree
+/dev/egysk/lowers/               verified, read-only boot-local Unix baselines
 /dev/egysk/modules/<id>/         writable effective module views
 /dev/egysk/state/<id>/           durable shared module state
 /sys/firmware/efi/efivars/        efivarfs, when supplied by the platform
@@ -71,17 +72,31 @@ The backing descriptor is opaque to the core: block sources select exactly one
 absolute source or sysfs PARTNAME; filesystem sources select an absolute path.
 The supplied helper exposes the existing Unix-capable backing filesystem.
 There is no module-storage LV, filesystem formatting, per-ROM module profile,
-capacity policy or ephemeral fallback. Keys and Android password-slot state
-remain outside owned module upper/work trees.
+capacity policy or ephemeral fallback for durable state. Keys and Android
+password-slot state remain outside owned module upper/work trees.
 
-Each ESP module gets an immutable Unix lower snapshot plus an OverlayFS upper/work
-pair per package generation on metadata. VFAT dentries cannot be OverlayFS lowers;
-the runtime copies each new generation once, verifies its identity, and publishes
-the snapshot only after syncing it. Interrupted copies are never exposed. Changed
-packages select fresh triples; prior edits remain recoverable rather than being
-merged into the new generation. Local installs, preferences and durable state share
-the metadata store. Activation journals recover interrupted package renames before
-views are mounted. Module ZIP operations use these product roots.
+Each ESP module gets a verified Unix lower snapshot in an owned tmpfs, with only
+its generation-specific OverlayFS upper/work pair on metadata. VFAT dentries
+cannot be OverlayFS lowers. Baselines are recreated from the admitted ESP
+generation for rdinit and Android reconstruction, initialized before attachment,
+and made read-only before consumers run. Interrupted copies are never exposed.
+Metadata-only copy-up (`metacopy=on`, `redirect_dir=on`, `index=off`,
+`nfs_export=off`, `xino=off`) keeps permission, ownership and label changes from
+copying unchanged file data. Effective mount options are checked before use;
+unsupported metadata-only operation fails rather than filling metadata through
+a silent full-copy fallback. Actual content writes still copy up file data.
+
+Generation identity and paths, not recreated tmpfs inode numbers, bind persistent
+deltas to the correct baseline. Package changes select fresh upper/work pairs;
+rollback reconstructs the old baseline and retains its edits. PID1 reclaims only
+obsolete generated `lower`/`.lower-incomplete` caches, validating all published
+copies before deleting any and durably retiring them to `.lower-incomplete`
+before removal, so interrupted deletion remains resumable. Upper/work, local
+packages, preferences and durable state remain untouched. Local installs and
+durable state still use the metadata
+store. Activation journals recover interrupted package renames before views are
+mounted. Module ZIP operations use these product roots. Once metadata-only upper
+entries exist, an older runtime with `metacopy=off` cannot consume that store.
 
 The same admitted module set supplies scripts, rc, policy, kmods and projection.
 Inner phases are outermost, module order innermost, with a 35-second foreground
@@ -136,6 +151,10 @@ work; it acknowledges duplicate dispatch only after publication succeeds.
 Fatal Egysk errors log their cause and panic: rdinit exits as PID 1 (also after
 `/proc` teardown), while native workers write SysRq `c`. A denied panic leaves
 the consumer barrier closed; it never falls back to a quiet reboot.
+Early foreground hooks retain a bounded stderr tail in the failure reason even
+when the boot console is silent. The pipe is drained during the existing deadline
+wait; later hooks keep inherited stderr so permitted background daemons retain
+their original output lifetime.
 The generated service guards use `reboot_on_failure reboot,egysk-fatal`. The
 helper converts that exact, NUL-terminated restart target from root PID 1 into a
 kernel panic, covering failed execution requests, unsuccessful exits and

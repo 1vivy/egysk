@@ -334,13 +334,7 @@ pub fn activate_pending(mode: BootMode, backing_root: &str) -> Result<()> {
     ] {
         fsu::directory(&Path::new(STORE).join(path))?;
     }
-    ensure!(
-        !fsu::mounted(Path::new(MODULES))?
-            && fsu::children(Path::new(MODULES))?
-                .iter()
-                .all(|p| !fsu::mounted(p).unwrap_or(true)),
-        "activation forbidden while effective modules are mounted"
-    );
+    ensure_views_unmounted()?;
     for path in fsu::children(&Path::new(STORE).join("activations"))? {
         if path.extension().and_then(|value| value.to_str()) == Some(TRANSACTION_TEMP_EXTENSION) {
             continue;
@@ -404,7 +398,7 @@ pub fn activate_pending(mode: BootMode, backing_root: &str) -> Result<()> {
                     skip_mount: true,
                     services: Vec::new(),
                 };
-                let mounts = mount_view(std::slice::from_ref(&module))?;
+                let mounts = mount_view(std::slice::from_ref(&module), ViewStage::Rdinit)?;
                 let result = crate::scripts::run_one(
                     &module,
                     &Path::new(MODULES).join(id),
@@ -554,6 +548,91 @@ pub fn rollback(id: &str, generation: &str) -> Result<()> {
     fsu::atomic(&journal(id), &serde_json::to_vec(&transaction)?)
 }
 
+fn ensure_views_unmounted() -> Result<()> {
+    let modules = Path::new(MODULES);
+    ensure!(
+        !fsu::mounted(Path::new(LOWERS))?
+            && !fsu::mounted(modules)?
+            && (!modules.try_exists()?
+                || fsu::children(modules)?
+                    .iter()
+                    .all(|path| !fsu::mounted(path).unwrap_or(true))),
+        "storage mutation forbidden while effective modules are mounted"
+    );
+    Ok(())
+}
+
+/// Reclaim only generated baseline copies, before any boot consumers exist.
+/// Upper/work, local packages, preferences and durable state are never removed.
+pub fn reclaim_lower_caches() -> Result<()> {
+    // SAFETY: getpid has no pointer arguments or memory preconditions.
+    ensure!(
+        unsafe { libc::getpid() } == 1,
+        "lower-cache reclamation requires PID1"
+    );
+    ensure_views_unmounted()?;
+    reclaim_lower_caches_at(&Path::new(STORE).join("overlays"))
+}
+
+fn reclaim_lower_caches_at(overlays: &Path) -> Result<()> {
+    if !overlays.try_exists()? {
+        return Ok(());
+    }
+    fsu::directory(overlays)?;
+    let mut caches = Vec::new();
+    for module in fsu::children(overlays)? {
+        identifier(
+            module
+                .file_name()
+                .and_then(|s| s.to_str())
+                .context("invalid cache module ID")?,
+        )?;
+        fsu::directory(&module)?;
+        for generation in fsu::children(&module)? {
+            let expected = generation
+                .file_name()
+                .and_then(|s| s.to_str())
+                .context("invalid cache generation")?;
+            ensure!(
+                expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid cache generation"
+            );
+            fsu::directory(&generation)?;
+            for name in [".lower-incomplete", "lower"] {
+                let cache = generation.join(name);
+                let metadata = match fs::symlink_metadata(&cache) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                ensure!(
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    "unsafe generated lower cache: {}",
+                    cache.display()
+                );
+                if name == "lower" {
+                    verify_generation(&cache, expected, Owner::Esp)?;
+                }
+                caches.push(cache);
+            }
+        }
+    }
+    // Validate all published copies before deleting any: unexpected contents
+    // may be unique user data, not a reconstructible baseline.
+    for cache in caches {
+        let parent = cache.parent().context("cache parent missing")?;
+        let retired = parent.join(".lower-incomplete");
+        if cache != retired {
+            // Persist retirement before unlinking anything. Interrupted deletion
+            // must not leave a partial tree under a verified, published name.
+            fsu::rename(&cache, &retired)?;
+        }
+        fs::remove_dir_all(&retired)?;
+        fsu::sync(parent)?;
+    }
+    Ok(())
+}
+
 fn prepare_esp_lower(source: &Path, generation: &Path, expected: &str) -> Result<PathBuf> {
     fsu::directory(generation)?;
     let lower = generation.join("lower");
@@ -561,9 +640,9 @@ fn prepare_esp_lower(source: &Path, generation: &Path, expected: &str) -> Result
         verify_generation(&lower, expected, Owner::Esp)?;
         return Ok(lower);
     }
-    // VFAT dentries cannot be OverlayFS lowers. Materialize one immutable Unix
-    // snapshot per generation on the same owned metadata filesystem instead.
-    // Never publish a partial copy, or replace a lower after it is published.
+    // VFAT dentries cannot be OverlayFS lowers. Materialize a verified Unix
+    // snapshot in the owned boot-local tmpfs, never on persistent metadata.
+    // Never expose a partial copy or replace a lower after publication.
     let pending = generation.join(".lower-incomplete");
     if pending.try_exists()? {
         let metadata = fs::symlink_metadata(&pending)?;
@@ -579,10 +658,87 @@ fn prepare_esp_lower(source: &Path, generation: &Path, expected: &str) -> Result
     Ok(lower)
 }
 
-pub fn mount_view(modules: &[Module]) -> Result<Vec<PathBuf>> {
+fn require_metacopy(modules: &[Module]) -> Result<()> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    let mut default = None;
+    for module in modules.iter().filter(|module| module.owner == Owner::Esp) {
+        let line = mountinfo
+            .lines()
+            .find(|line| {
+                line.split_whitespace().nth(4).is_some_and(|target| {
+                    let target = Path::new(target);
+                    target.parent() == Some(Path::new(MODULES))
+                        && target.file_name() == Some(std::ffi::OsStr::new(&module.id))
+                })
+            })
+            .context("effective module mount missing")?;
+        let mut fields = line
+            .split_once(" - ")
+            .context("invalid module mountinfo")?
+            .1
+            .split_whitespace();
+        ensure!(
+            fields.next() == Some("overlay"),
+            "module view is not OverlayFS"
+        );
+        let options = fields.nth(1).context("module superblock options missing")?;
+        ensure!(
+            !options.split(',').any(|option| option == "userxattr"),
+            "module overlay requires trusted metadata"
+        );
+        let enabled = match options
+            .split(',')
+            .find_map(|option| option.strip_prefix("metacopy="))
+        {
+            Some("on") => true,
+            Some("off") => false,
+            Some(_) => anyhow::bail!("unknown OverlayFS metacopy mode"),
+            None => {
+                // show_options omits values equal to the current module default.
+                // A successful mount alone does not rule out a silent downgrade.
+                if default.is_none() {
+                    let value =
+                        fsu::text(Path::new("/sys/module/overlay/parameters/metacopy"), 16)?;
+                    default = Some(match value.trim() {
+                        "Y" => true,
+                        "N" => false,
+                        _ => anyhow::bail!("unknown OverlayFS metacopy default"),
+                    });
+                }
+                default.context("OverlayFS metacopy default missing")?
+            }
+        };
+        ensure!(
+            enabled,
+            "module {} lost metadata-only copy-up support",
+            module.id
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ViewStage {
+    Rdinit,
+    Android,
+}
+
+pub fn mount_view(modules: &[Module], stage: ViewStage) -> Result<Vec<PathBuf>> {
     let mut owned = Vec::new();
     let result = (|| {
         fsu::directory(Path::new(MODULES))?;
+        ensure_views_unmounted()?;
+        let has_esp = modules.iter().any(|module| module.owner == Owner::Esp);
+        if has_esp {
+            fsu::mount(
+                MOUNT_SOURCE,
+                Path::new(LOWERS),
+                EXECUTABLE_MOUNT.fs_type,
+                EXECUTABLE_MOUNT.flags,
+                EXECUTABLE_MOUNT.data,
+            )?;
+            owned.push(PathBuf::from(LOWERS));
+        }
         for module in modules {
             let lower = lower(module);
             identify(&lower, &module.id)?;
@@ -594,19 +750,21 @@ pub fn mount_view(modules: &[Module]) -> Result<Vec<PathBuf>> {
                     .join("overlays")
                     .join(&module.id)
                     .join(&module.generation);
-                let lower = prepare_esp_lower(&lower, &generation, &module.generation)?;
+                let staging = Path::new(LOWERS).join(&module.id).join(&module.generation);
+                let lower = prepare_esp_lower(&lower, &staging, &module.generation)?;
+                crate::bootstrap::prepare_lower(&lower, stage == ViewStage::Android)?;
                 let upper = generation.join("upper");
                 let work = generation.join("work");
                 fsu::directory(&upper)?;
                 fsu::directory(&work)?;
-                // A real overlay mount is the upper/work filesystem capability check.
+                // Refuse silent metacopy downgrades before exposing any views.
                 fsu::mount(
                     "egysk",
                     &target,
                     "overlay",
                     libc::MS_NODEV | libc::MS_NOSUID,
                     &format!(
-                        "lowerdir={},upperdir={},workdir={},index=off,metacopy=off,xino=off,redirect_dir=nofollow",
+                        "lowerdir={},upperdir={},workdir={},index=off,metacopy=on,xino=off,redirect_dir=on,nfs_export=off",
                         lower.display(),
                         upper.display(),
                         work.display()
@@ -642,6 +800,18 @@ pub fn mount_view(modules: &[Module]) -> Result<Vec<PathBuf>> {
                 "",
             )?;
             owned.push(target);
+        }
+        if has_esp {
+            require_metacopy(modules)?;
+            // All baseline writes finish before scripts or native projection.
+            // Persistent changes must go through the generation's upper.
+            fsu::mount(
+                "",
+                Path::new(LOWERS),
+                "",
+                libc::MS_REMOUNT | libc::MS_RDONLY | EXECUTABLE_MOUNT.flags,
+                EXECUTABLE_MOUNT.data,
+            )?;
         }
         Ok(())
     })();
@@ -700,6 +870,117 @@ mod tests {
             fs::read_to_string(lower.join("payload")).unwrap(),
             "corrupt cached lower"
         );
+    }
+
+    #[test]
+    fn cache_reclamation_preserves_upper_work_and_durable_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let expected = package(&source, "baseline");
+        let store = temporary.path().join("store");
+        let overlays = store.join("overlays");
+        let generation = overlays.join("example").join(expected);
+        fsu::copy_tree(&source, &generation.join("lower")).unwrap();
+        package(&generation.join(".lower-incomplete"), "partial");
+        let retained = [
+            (generation.join("upper/payload"), "user edits"),
+            (generation.join("work/retained"), "work state"),
+            (store.join("state/example/durable"), "module state"),
+            (store.join("modules/local/payload"), "local install"),
+            (temporary.path().join("password_slots/slot_map"), "0=gsi2"),
+        ];
+        for (path, contents) in &retained {
+            fsu::directory(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        reclaim_lower_caches_at(&overlays).unwrap();
+        assert!(!generation.join("lower").exists());
+        assert!(!generation.join(".lower-incomplete").exists());
+        for (path, contents) in &retained {
+            assert_eq!(fs::read_to_string(path).unwrap(), *contents);
+        }
+    }
+
+    #[test]
+    fn failed_cache_deletion_leaves_only_a_resumable_incomplete_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid takes no arguments. Root bypasses the permission fault.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        package(&source, "baseline");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o555)).unwrap();
+        let expected = fsu::generation(&source).unwrap();
+        let overlays = temporary.path().join("overlays");
+        let generation = overlays.join("example").join(expected);
+        let lower = generation.join("lower");
+        let incomplete = generation.join(".lower-incomplete");
+        fsu::copy_tree(&source, &lower).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = reclaim_lower_caches_at(&overlays);
+        // Restore permissions even on a regression so the fixture cleans up.
+        for path in [&lower, &incomplete] {
+            if path.exists() {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(!lower.exists(), "failed deletion left a published lower");
+        assert!(incomplete.is_dir());
+        fs::remove_file(incomplete.join("payload")).unwrap();
+        reclaim_lower_caches_at(&overlays).unwrap();
+        assert!(!incomplete.exists());
+    }
+
+    #[test]
+    fn cache_reclamation_checks_every_published_copy_before_deleting_any() {
+        let temporary = tempfile::tempdir().unwrap();
+        let overlays = temporary.path().join("overlays");
+        let mut generations = Vec::new();
+        for contents in ["first", "second"] {
+            let source = temporary.path().join(contents);
+            let expected = package(&source, contents);
+            let generation = overlays.join("example").join(expected);
+            fsu::copy_tree(&source, &generation.join("lower")).unwrap();
+            generations.push(generation);
+        }
+        generations.sort();
+        let changed = generations[1].join("lower/payload");
+        fs::write(&changed, "unexpected unique data").unwrap();
+        assert!(reclaim_lower_caches_at(&overlays).is_err());
+        for generation in generations {
+            assert!(generation.join("lower/payload").is_file());
+        }
+        assert_eq!(
+            fs::read_to_string(changed).unwrap(),
+            "unexpected unique data"
+        );
+    }
+
+    #[test]
+    fn cache_reclamation_refuses_a_link_to_an_unrelated_tree() {
+        let temporary = tempfile::tempdir().unwrap();
+        let unrelated = temporary.path().join("unrelated");
+        let expected = package(&unrelated, "must survive");
+        let overlays = temporary.path().join("overlays");
+        let generation = overlays.join("example").join(expected);
+        fsu::directory(&generation).unwrap();
+        std::os::unix::fs::symlink(&unrelated, generation.join(".lower-incomplete")).unwrap();
+        assert!(reclaim_lower_caches_at(&overlays).is_err());
+        assert_eq!(
+            fs::read_to_string(unrelated.join("payload")).unwrap(),
+            "must survive"
+        );
+        assert!(generation.join(".lower-incomplete").is_symlink());
     }
 
     #[test]

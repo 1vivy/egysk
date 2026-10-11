@@ -147,8 +147,30 @@ pub fn initialize_store() -> Result<()> {
 fn label(path: &Path, context: &str) -> Result<()> {
     let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
     let context = std::ffi::CString::new(context)?;
-    // lsetxattr never follows a module's symlink. With metacopy=off this also
-    // forces the owned overlay's inode/data copy-up before Android exports it.
+    let mut current = [0u8; 256];
+    // SAFETY: path/name are NUL-terminated and current is a writable buffer.
+    let length = unsafe {
+        libc::lgetxattr(
+            name.as_ptr(),
+            c"security.selinux".as_ptr(),
+            current.as_mut_ptr().cast(),
+            current.len(),
+        )
+    };
+    if length >= 0 {
+        let value = &current[..length as usize];
+        if value.strip_suffix(&[0]).unwrap_or(value) == context.as_bytes() {
+            return Ok(());
+        }
+    } else {
+        let error = std::io::Error::last_os_error();
+        ensure!(
+            matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ERANGE)),
+            "read label {}: {error}",
+            path.display()
+        );
+    }
+    // SAFETY: pointers reference live NUL-terminated strings and context bytes.
     ensure!(
         unsafe {
             libc::lsetxattr(
@@ -174,10 +196,69 @@ fn label_tree(root: &Path, context: &str) -> Result<()> {
     }
     Ok(())
 }
+fn initialize_esp_permissions(root: &Path) -> Result<()> {
+    fn permissions(root: &Path, path: &Path) -> Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        let relative = path.strip_prefix(root)?;
+        let executable = relative
+            .components()
+            .any(|part| matches!(part.as_os_str().to_str(), Some("bin" | "xbin")))
+            || path.extension().and_then(|value| value.to_str()) == Some("sh");
+        let mode = if metadata.is_dir() || executable {
+            0o755
+        } else {
+            0o644
+        };
+        if metadata.permissions().mode() & 0o7777 != mode {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .with_context(|| format!("initialize module permissions: {}", path.display()))?;
+        }
+        if metadata.is_dir() {
+            for child in fsu::children(path)? {
+                permissions(root, &child)?;
+            }
+        }
+        Ok(())
+    }
+    permissions(root, root)
+}
+
+fn label_module_tree(root: &Path) -> Result<()> {
+    fn visit(root: &Path, path: &Path) -> Result<()> {
+        let relative = path.strip_prefix(root)?;
+        let context = if relative.starts_with("system/vendor") {
+            "u:object_r:vendor_file:s0"
+        } else if relative.starts_with("system") {
+            "u:object_r:system_file:s0"
+        } else {
+            FILE_CONTEXT
+        };
+        label(path, context)?;
+        if fs::symlink_metadata(path)?.is_dir() {
+            for child in fsu::children(path)? {
+                visit(root, &child)?;
+            }
+        }
+        Ok(())
+    }
+    visit(root, root)
+}
+
+pub(crate) fn prepare_lower(root: &Path, android: bool) -> Result<()> {
+    initialize_esp_permissions(root)?;
+    if android {
+        label_module_tree(root)?;
+    }
+    Ok(())
+}
+
 pub fn label_module(module: &Module) -> Result<()> {
     let root = Path::new(MODULES).join(&module.id);
-    // FAT supplies no Unix modes. Initialize a fresh ESP upper once; preserved
-    // generations (including rollback) retain the user's copied-up permissions.
+    // Baselines already have canonical modes. Only fresh upper entries need
+    // initialization; preserved generations retain the user's changed modes.
     if module.owner == Owner::Esp
         && !Path::new(STORE)
             .join("prepared")
@@ -185,44 +266,9 @@ pub fn label_module(module: &Module) -> Result<()> {
             .join(&module.generation)
             .exists()
     {
-        fn permissions(root: &Path, path: &Path) -> Result<()> {
-            let metadata = fs::symlink_metadata(path)?;
-            if metadata.file_type().is_symlink() {
-                return Ok(());
-            }
-            let relative = path.strip_prefix(root)?;
-            let executable = relative
-                .components()
-                .any(|part| matches!(part.as_os_str().to_str(), Some("bin" | "xbin")))
-                || path.extension().and_then(|value| value.to_str()) == Some("sh");
-            fs::set_permissions(
-                path,
-                fs::Permissions::from_mode(if metadata.is_dir() || executable {
-                    0o755
-                } else {
-                    0o644
-                }),
-            )
-            .with_context(|| format!("initialize module permissions: {}", path.display()))?;
-            if metadata.is_dir() {
-                for child in fsu::children(path)? {
-                    permissions(root, &child)?;
-                }
-            }
-            Ok(())
-        }
-        permissions(&root, &root)?;
+        initialize_esp_permissions(&root)?;
     }
-    label_tree(&root, FILE_CONTEXT)?;
-    for (directory, context) in [
-        ("system", "u:object_r:system_file:s0"),
-        ("system/vendor", "u:object_r:vendor_file:s0"),
-    ] {
-        let directory = root.join(directory);
-        if directory.exists() {
-            label_tree(&directory, context)?;
-        }
-    }
+    label_module_tree(&root)?;
     label_tree(
         &Path::new(ROOT).join("state").join(&module.id),
         FILE_CONTEXT,
@@ -312,7 +358,8 @@ pub fn reconstruct(hex: &str) -> Result<()> {
     // or password_slots siblings. Do this before attaching any overlay.
     label_tree(Path::new(STORE), FILE_CONTEXT)?;
     label(Path::new(MODULES), FILE_CONTEXT)?;
-    crate::store::mount_view(&descriptor.modules).context("reconstruct module views")?;
+    crate::store::mount_view(&descriptor.modules, crate::store::ViewStage::Android)
+        .context("reconstruct module views")?;
     fsu::mount(
         MOUNT_SOURCE,
         Path::new(RD),

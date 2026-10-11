@@ -198,6 +198,7 @@ pub fn run() -> Result<()> {
     owned.push(PathBuf::from(BIN));
     bootstrap::stage_tools(&config, true)?;
     owned.extend(bootstrap::prepare_backing(&config)?);
+    store::reclaim_lower_caches()?;
     bootstrap::initialize_store()?;
     if !config.safe_mode && mode != BootMode::Charger {
         store::activate_pending(mode, &config.backing.mount_at)?;
@@ -211,7 +212,10 @@ pub fn run() -> Result<()> {
         config,
         mode,
     };
-    owned.extend(store::mount_view(&descriptor.modules)?);
+    owned.extend(store::mount_view(
+        &descriptor.modules,
+        store::ViewStage::Rdinit,
+    )?);
     fsu::mount(
         MOUNT_SOURCE,
         Path::new(RD),

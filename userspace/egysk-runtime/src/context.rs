@@ -15,6 +15,7 @@ pub const PACKAGE: &str = "/dev/esp/egysk";
 pub const BIN: &str = "/dev/egysk/bin";
 pub const STORE: &str = "/dev/egysk/store";
 pub const MODULES: &str = "/dev/egysk/modules";
+pub const LOWERS: &str = "/dev/egysk/lowers";
 pub const SOURCE: &str = "/dev/egysk/source";
 pub const BOOTSTRAP_CONFIG: &str = "/egysk.toml";
 pub const PACKAGE_CONFIG: &str = "/dev/esp/egysk/egysk.toml";

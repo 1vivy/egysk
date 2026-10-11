@@ -212,6 +212,30 @@ fn foreground_completion_observes_script_failure_before_consumers() {
 }
 
 #[test]
+fn foreground_stderr_cannot_fill_the_pipe_and_hide_the_failure_tail() {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "set -e; dd if=/dev/zero bs=4096 count=32 >&2 2>/dev/null; printf 'final failure cause' >&2; exit 23",
+        ])
+        .stderr(std::process::Stdio::piped())
+        .process_group(0);
+    let mut child = command.spawn().unwrap();
+    let error = egysk_runtime::scripts::wait_until(
+        &mut child,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        true,
+    )
+    .unwrap_err();
+    assert_eq!(child.try_wait().unwrap().unwrap().code(), Some(23));
+    let detail = error.to_string();
+    assert!(detail.ends_with("final failure cause"));
+    assert!(detail.len() < 1024);
+}
+
+#[test]
 fn policy_commands_keep_the_frozen_uapi_header_values() {
     for (statement, command, subcommand) in [
         ("allow a b file read", 1u32, 1u32),
