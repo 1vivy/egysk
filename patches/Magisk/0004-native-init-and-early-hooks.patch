@@ -1,0 +1,708 @@
+diff --git a/native/src/Cargo.lock b/native/src/Cargo.lock
+--- a/native/src/Cargo.lock
++++ b/native/src/Cargo.lock
+@@ -695,6 +695,7 @@
+  "base",
+  "cxx",
+  "cxx-gen",
++ "egysk-runtime",
+  "magiskpolicy",
+  "num-traits",
+ ]
+diff --git a/native/src/sepolicy/policydb.cpp b/native/src/sepolicy/policydb.cpp
+--- a/native/src/sepolicy/policydb.cpp
++++ b/native/src/sepolicy/policydb.cpp
+@@ -117,6 +117,30 @@
+         return {};
+     }
+ 
++    if (file == "/sys/fs/selinux/policy") {
++        constexpr uint32_t mask = (1u << 31) | (1u << 30);
++        auto original = xopen_file("/dev/egysk/.egysk/selinux/load", "re");
++        policydb_t snapshot;
++        if (!original || policydb_init(&snapshot)) {
++            LOGE("Original current-boot policy unavailable for Android netlink flags\n");
++            policydb_destroy(db);
++            free(db);
++            return {};
++        }
++        policy_file_t saved;
++        policy_file_init(&saved);
++        saved.type = PF_USE_STDIO;
++        saved.fp = original.get();
++        if (policydb_read(&snapshot, &saved, 0)) {
++            LOGE("Cannot read original current-boot policy flags\n");
++            policydb_destroy(&snapshot);
++            policydb_destroy(db);
++            free(db);
++            return {};
++        }
++        db->android_extra = (db->android_extra & ~mask) | (snapshot.android_extra & mask);
++        policydb_destroy(&snapshot);
++    }
+     return {std::make_unique<sepol_impl>(db)};
+ }
+ 
+diff --git a/native/src/init/Cargo.toml b/native/src/init/Cargo.toml
+--- a/native/src/init/Cargo.toml
++++ b/native/src/init/Cargo.toml
+@@ -14,6 +14,7 @@
+ cxx-gen = { workspace = true }
+ 
+ [dependencies]
++egysk-runtime = { path = "../../../../../userspace/egysk-runtime" }
+ base = { workspace = true }
+ magiskpolicy = { workspace = true, features = ["no-main"] }
+ cxx = { workspace = true }
+diff --git a/native/src/init/lib.rs b/native/src/init/lib.rs
+--- a/native/src/init/lib.rs
++++ b/native/src/init/lib.rs
+@@ -10,6 +10,10 @@
+ mod consts;
+ mod getinfo;
+ mod init;
++#[path = "../../../product/init.rs"]
++mod product_init;
++#[path = "../../../product/init_policy.rs"]
++mod product_policy;
+ mod logging;
+ mod mount;
+ mod rootdir;
+@@ -52,7 +56,6 @@
+         #[cxx_name = "Utf8CStr"]
+         type Utf8CStrRef<'a> = base::Utf8CStrRef<'a>;
+ 
+-        unsafe fn magisk_proxy_main(argc: i32, argv: *mut *mut c_char) -> i32;
+         fn backup_init() -> Utf8CStrRef<'static>;
+ 
+         // Constants
+diff --git a/native/src/init/init.rs b/native/src/init/init.rs
+--- a/native/src/init/init.rs
++++ b/native/src/init/init.rs
+@@ -1,8 +1,8 @@
+-use crate::ffi::{BootConfig, MagiskInit, backup_init, magisk_proxy_main};
++use crate::ffi::{BootConfig, MagiskInit, backup_init};
+ use crate::logging::setup_klog;
+ use crate::mount::is_rootfs;
+ use crate::twostage::hexpatch_init_for_second_stage;
+-use base::libc::{basename, getpid, mount, umask};
++use base::libc::{getpid, mount, umask};
+ use base::{LibcReturn, LoggedResult, ResultExt, cstr, info, raw_cstr};
+ use std::ffi::{CStr, c_char};
+ use std::ptr::null;
+@@ -91,7 +91,7 @@
+     fn recovery_or_charger(&self) {
+         info!("Charger mode or ramdisk is recovery, abort");
+         self.restore_ramdisk_init();
+-        cstr!("/.backup").remove_all().ok();
++        cstr!("/.egysk-backup").remove_all().ok();
+     }
+ 
+     fn restore_ramdisk_init(&self) {
+@@ -102,12 +102,7 @@
+         if orig_init.exists() {
+             orig_init.rename_to(cstr!("/init")).log_ok();
+         } else {
+-            // If the backup init is missing, this means that the boot ramdisk
+-            // was created from scratch, and the real init is in a separate CPIO,
+-            // which is guaranteed to be placed at /system/bin/init.
+-            cstr!("/init")
+-                .create_symlink_to(cstr!("/system/bin/init"))
+-                .log_ok();
++            egysk_runtime::fatal_boot("current-boot original init backup missing");
+         }
+     }
+ 
+@@ -143,6 +138,10 @@
+ 
+         setup_klog();
+ 
++        let argv1 = unsafe { *self.argv.offset(1) };
++        if argv1.is_null() || unsafe { CStr::from_ptr(argv1) != c"selinux_setup" } {
++            crate::product_init::early();
++        }
+         self.config.init();
+ 
+         let argv1 = unsafe { *self.argv.offset(1) };
+@@ -178,21 +177,17 @@
+ 
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn main(
+-    argc: i32,
++    _argc: i32,
+     argv: *mut *mut c_char,
+     _envp: *const *const c_char,
+ ) -> i32 {
+     unsafe {
+         umask(0);
+ 
+-        let name = basename(*argv);
+-
+-        if CStr::from_ptr(name) == c"magisk" {
+-            return magisk_proxy_main(argc, argv);
+-        }
+-
+         if getpid() == 1 {
+-            MagiskInit::new(argv).start().log_ok();
++            if MagiskInit::new(argv).start().is_err() {
++                egysk_runtime::fatal_boot("native initializer failed; see kernel log");
++            }
+         }
+ 
+         1
+diff --git a/native/src/init/rootdir.cpp b/native/src/init/rootdir.cpp
+--- a/native/src/init/rootdir.cpp
++++ b/native/src/init/rootdir.cpp
+@@ -4,7 +4,6 @@
+ #include <sepolicy.hpp>
+ #include <consts.hpp>
+ #include <base.hpp>
+-#include <xz.h>
+ 
+ #include "init.hpp"
+ 
+@@ -14,36 +13,11 @@
+ 
+ #define NEW_INITRC_DIR  "/system/etc/init/hw"
+ #define INIT_RC         "init.rc"
+-
+-static bool unxz(int fd, rust::Slice<const uint8_t> bytes) {
+-    uint8_t out[8192];
+-    xz_crc32_init();
+-    size_t size = bytes.size();
+-    struct xz_dec *dec = xz_dec_init(XZ_DYNALLOC, 1 << 26);
+-    run_finally finally([&] { xz_dec_end(dec); });
+-    struct xz_buf b = {
+-        .in = bytes.data(),
+-        .in_pos = 0,
+-        .in_size = size,
+-        .out = out,
+-        .out_pos = 0,
+-        .out_size = sizeof(out)
+-    };
+-    enum xz_ret ret;
+-    do {
+-        ret = xz_dec_run(dec, &b);
+-        if (ret != XZ_OK && ret != XZ_STREAM_END)
+-            return false;
+-        write(fd, out, b.out_pos);
+-        b.out_pos = 0;
+-    } while (b.in_pos != size);
+-    return true;
+-}
+ 
+ // When return true, run patch_fissiond
+ static bool patch_rc_scripts(const char *src_path, const char *tmp_path, bool writable) {
+     auto src_dir = xopen_dir(src_path);
+-    if (!src_dir) return false;
++    if (!src_dir) exit(1);
+     int src_fd = dirfd(src_dir.get());
+ 
+     // If writable, directly modify the file in src_path, or else add to rootfs overlay
+@@ -55,18 +29,19 @@
+         xmkdirs(buf, 0755);
+         return xopen_dir(buf);
+     }();
+-    if (!dest_dir) return false;
++    if (!dest_dir) exit(1);
+     int dest_fd = dirfd(dest_dir.get());
+ 
+     // First patch init.rc
+     {
+         owned_fd src_rc = xopenat(src_fd, INIT_RC, O_RDONLY | O_CLOEXEC, 0);
+-        if (src_rc < 0) return false;
++        if (src_rc < 0) exit(1);
+         if (writable) unlinkat(src_fd, INIT_RC, 0);
+         auto dest_rc = xopen_file(
+                 xopenat(dest_fd, INIT_RC, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0), "we");
+-        if (!dest_rc) return false;
++        if (!dest_rc) exit(1);
+         LOGD("Patching " INIT_RC " in %s\n", src_path);
++        rust::inject_magisk_rc(fileno(dest_rc.get()), tmp_path);
+         file_readline(src_rc, [&dest_rc](Utf8CStr line) -> bool {
+             // Do not start vaultkeeper
+             if (line.sv().contains("start vaultkeeper")) {
+@@ -100,8 +75,7 @@
+         }
+         rc_list.clear();
+ 
+-        // Inject Magisk rc scripts
+-        rust::inject_magisk_rc(fileno(dest_rc.get()), tmp_path);
++        // Native actions were registered before stock actions above.
+ 
+         fclone_attr(src_rc, fileno(dest_rc.get()));
+     }
+@@ -124,7 +98,7 @@
+                 LOGD("Inject zygote restart\n");
+                 fprintf(dest_rc.get(), "%s", line.c_str());
+                 fprintf(dest_rc.get(),
+-                        "    onrestart exec " MAGISK_PROC_CON " 0 0 -- %s/magisk --zygote-restart\n", tmp_path);
++                        "    onrestart exec " MAGISK_PROC_CON " 0 0 -- %s/bin/egyskd --zygote-restart\n", tmp_path);
+                 return true;
+             }
+             fprintf(dest_rc.get(), "%s", line.c_str());
+@@ -202,93 +176,27 @@
+     }
+ }
+ 
+-static void recreate_sbin(const char *mirror, bool use_bind_mount) {
+-    auto dp = xopen_dir(mirror);
+-    int src = dirfd(dp.get());
+-    char buf[4096];
+-    for (dirent *entry; (entry = xreaddir(dp.get()));) {
+-        string sbin_path = "/sbin/"s + entry->d_name;
+-        struct stat st;
+-        fstatat(src, entry->d_name, &st, AT_SYMLINK_NOFOLLOW);
+-        if (S_ISLNK(st.st_mode)) {
+-            xreadlinkat(src, entry->d_name, buf, sizeof(buf));
+-            xsymlink(buf, sbin_path.data());
+-        } else {
+-            sprintf(buf, "%s/%s", mirror, entry->d_name);
+-            if (use_bind_mount) {
+-                auto mode = st.st_mode & 0777;
+-                // Create dummy
+-                if (S_ISDIR(st.st_mode))
+-                    xmkdir(sbin_path.data(), mode);
+-                else
+-                    close(xopen(sbin_path.data(), O_CREAT | O_WRONLY | O_CLOEXEC, mode));
+-
+-                xmount(buf, sbin_path.data(), nullptr, MS_BIND, nullptr);
+-            } else {
+-                xsymlink(buf, sbin_path.data());
+-            }
+-        }
+-    }
+-}
+-
+-static void extract_files(bool sbin) {
+-    const char *magisk_xz = sbin ? "/sbin/magisk.xz" : "magisk.xz";
+-    const char *stub_xz = sbin ? "/sbin/stub.xz" : "stub.xz";
+-    const char *init_ld_xz = sbin ? "/sbin/init-ld.xz" : "init-ld.xz";
+-
+-    if (access(magisk_xz, F_OK) == 0) {
+-        mmap_data magisk(magisk_xz);
+-        unlink(magisk_xz);
+-        int fd = xopen("magisk", O_WRONLY | O_CREAT, 0755);
+-        unxz(fd, magisk);
+-        close(fd);
+-    }
+-    if (access(stub_xz, F_OK) == 0) {
+-        mmap_data stub(stub_xz);
+-        unlink(stub_xz);
+-        int fd = xopen("stub.apk", O_WRONLY | O_CREAT, 0);
+-        unxz(fd, stub);
+-        close(fd);
+-    }
+-    if (access(init_ld_xz, F_OK) == 0) {
+-        mmap_data init_ld(init_ld_xz);
+-        unlink(init_ld_xz);
+-        int fd = xopen("init-ld", O_WRONLY | O_CREAT, 0);
+-        unxz(fd, init_ld);
+-        close(fd);
+-    }
++static void extract_files(bool) {
++    // Payload tools were retained by native prepare_data()/setup_tmp().
++    // init-ld is still consumed by upstream's standard policy interception.
++    if (access("bin/egyskd", X_OK) || access("bin/busybox", X_OK) || access("bin/init-ld", R_OK)) {
++        LOGE("Native payload binaries missing\n");
++        exit(1);
++    }
++    cp_afc("bin/init-ld", "init-ld");
+ }
+ 
+ void MagiskInit::patch_ro_root() noexcept {
+     mount_list.emplace_back("/data");
+     parse_config_file();
+ 
+-    string tmp_dir;
+-
+-    if (access("/sbin", F_OK) == 0) {
+-        tmp_dir = "/sbin";
+-    } else {
+-        tmp_dir = "/debug_ramdisk";
+-        xmkdir("/data/debug_ramdisk", 0);
+-        xmount("/debug_ramdisk", "/data/debug_ramdisk", nullptr, MS_MOVE, nullptr);
+-    }
+-
++    string tmp_dir = "/dev/egysk";
++    xmkdirs(tmp_dir.c_str(), 0755);
++    xmkdirs("/dev/esp", 0755);
+     setup_tmp(tmp_dir.data());
+     chdir(tmp_dir.data());
+ 
+-    if (tmp_dir == "/sbin") {
+-        // Recreate original sbin structure
+-        xmkdir(MIRRDIR, 0755);
+-        xmount("/", MIRRDIR, nullptr, MS_BIND, nullptr);
+-        recreate_sbin(MIRRDIR "/sbin", true);
+-        xumount2(MIRRDIR, MNT_DETACH);
+-    } else {
+-        // Restore debug_ramdisk
+-        xmount("/data/debug_ramdisk", "/debug_ramdisk", nullptr, MS_MOVE, nullptr);
+-        rmdir("/data/debug_ramdisk");
+-    }
+-
+-    xrename("overlay.d", ROOTOVL);
++    xrename("egysk-overlay.d", ROOTOVL);
+ 
+     extern bool avd_hack;
+     // Handle avd hack
+@@ -308,7 +216,7 @@
+ 
+     load_overlay_rc(ROOTOVL);
+     if (access(ROOTOVL "/sbin", F_OK) == 0) {
+-        // Move files in overlay.d/sbin into tmp_dir
++        // Move files in egysk-overlay.d/sbin into tmp_dir
+         mv_path(ROOTOVL "/sbin", ".");
+     }
+ 
+@@ -334,83 +242,10 @@
+     chdir("/");
+ }
+ 
+-#define PRE_TMPSRC "/magisk"
+-#define PRE_TMPDIR PRE_TMPSRC "/tmp"
+-
+ void MagiskInit::patch_rw_root() noexcept {
+-    mount_list.emplace_back("/data");
+-    parse_config_file();
+-
+-    // Create hardlink mirror of /sbin to /root
+-    mkdir("/root", 0777);
+-    clone_attr("/sbin", "/root");
+-    link_path("/sbin", "/root");
+-
+-    // Handle overlays
+-    load_overlay_rc("/overlay.d");
+-    mv_path("/overlay.d", "/");
+-    rm_rf("/data/overlay.d");
+-    rm_rf("/.backup");
+-
+-    // Patch init.rc
+-    if (patch_rc_scripts("/", "/sbin", true))
+-        patch_fissiond("/sbin");
+-
+-    xmkdir(PRE_TMPSRC, 0);
+-    xmount("tmpfs", PRE_TMPSRC, "tmpfs", 0, "mode=755");
+-    xmkdir(PRE_TMPDIR, 0);
+-    setup_tmp(PRE_TMPDIR);
+-    chdir(PRE_TMPDIR);
+-
+-    // Extract overlay archives
+-    extract_files(true);
+-
+-    handle_sepolicy();
+-    unlink("init-ld");
+-
+-    chdir("/");
+-
+-    // Dump magiskinit as magisk
+-    cp_afc(REDIR_PATH, "/sbin/magisk");
+-}
+-
+-int magisk_proxy_main(int, char *argv[]) {
+-    rust::setup_klog();
+-    LOGD("%s\n", __FUNCTION__);
+-
+-    // Mount rootfs as rw to do post-init rootfs patches
+-    xmount(nullptr, "/", nullptr, MS_REMOUNT, nullptr);
+-
+-    unlink("/sbin/magisk");
+-
+-    // Move tmpfs to /sbin
+-    // make parent private before MS_MOVE
+-    xmount(nullptr, PRE_TMPSRC, nullptr, MS_PRIVATE, nullptr);
+-    xmount(PRE_TMPDIR, "/sbin", nullptr, MS_MOVE, nullptr);
+-    xumount2(PRE_TMPSRC, MNT_DETACH);
+-    rmdir(PRE_TMPDIR);
+-    rmdir(PRE_TMPSRC);
+-
+-    // Create symlinks pointing back to /root
+-    recreate_sbin("/root", false);
+-
+-    // Tell magiskd to remount rootfs
+-    setenv("REMOUNT_ROOT", "1", 1);
+-    execve("/sbin/magisk", argv, environ);
+-    return 1;
+-}
+-
+-static void unxz_init(const char *init_xz, const char *init) {
+-    LOGD("unxz %s -> %s\n", init_xz, init);
+-    int fd = xopen(init, O_WRONLY | O_CREAT, 0777);
+-    unxz(fd, mmap_data{init_xz});
+-    close(fd);
+-    clone_attr(init_xz, init);
+-    unlink(init_xz);
++    patch_ro_root();
+ }
+ 
+ Utf8CStr backup_init() {
+-    if (access("/.backup/init.xz", F_OK) == 0)
+-        unxz_init("/.backup/init.xz", "/.backup/init");
+-    return "/.backup/init";
+-}
++    return "/.egysk-backup/init";
++}
+diff --git a/native/src/init/rootdir.rs b/native/src/init/rootdir.rs
+--- a/native/src/init/rootdir.rs
++++ b/native/src/init/rootdir.rs
+@@ -15,24 +15,8 @@
+ 
+     let mut file = unsafe { File::from_raw_fd(fd) };
+ 
+-    write!(
+-        file,
+-        r#"
+-on post-fs-data
+-    exec {0} 0 0 -- {1}/magisk --post-fs-data
+-
+-on property:vold.decrypt=trigger_restart_framework
+-    exec {0} 0 0 -- {1}/magisk --service
+-
+-on nonencrypted
+-    exec {0} 0 0 -- {1}/magisk --service
+-
+-on property:sys.boot_completed=1
+-    exec {0} 0 0 -- {1}/magisk --boot-complete
+-"#,
+-        "u:r:magisk:s0", tmp_dir
+-    )
+-    .ok();
++    file.write_all(crate::product_init::actions(tmp_dir.as_str()).as_bytes())
++        .unwrap_or_else(|error| egysk_runtime::fatal_boot(&format!("native RC injection: {error}")));
+ 
+     mem::forget(file)
+ }
+@@ -41,7 +25,7 @@
+ 
+ impl MagiskInit {
+     pub(crate) fn parse_config_file(&mut self) {
+-        if let Ok(fd) = cstr!("/data/.backup/.magisk").open(OFlag::O_RDONLY) {
++        if let Ok(fd) = cstr!("/data/.egysk-backup/.magisk").open(OFlag::O_RDONLY) {
+             let mut reader = BufReader::new(fd);
+             reader.for_each_prop(|key, val| {
+                 if key == "PREINITDEVICE" {
+diff --git a/native/src/init/mount.cpp b/native/src/init/mount.cpp
+--- a/native/src/init/mount.cpp
++++ b/native/src/init/mount.cpp
+@@ -213,20 +213,20 @@
+ 
+     mount_preinit_dir();
+ 
+-    cp_afc(".backup/.magisk", MAIN_CONFIG);
+-    rm_rf(".backup");
++    cp_afc(".egysk-backup/.magisk", MAIN_CONFIG);
++    rm_rf(".egysk-backup");
+ 
+     // Create applet symlinks
+     for (int i = 0; applet_names[i]; ++i)
+-        xsymlink("./magisk", applet_names[i]);
+-    xsymlink("./magiskpolicy", "supolicy");
+-
+-    xmount(".", path, nullptr, MS_BIND, nullptr);
++        xsymlink("./bin/egyskd", applet_names[i]);
++    xsymlink("./bin/magiskpolicy", "supolicy");
++
++    if (xmount(".", path, nullptr, MS_BIND, nullptr)) exit(1);
+ 
+     chdir(path);
+ 
+     // Prepare worker
+-    xmount("magisk", WORKERDIR, "tmpfs", 0, "mode=755");
++    if (xmount("egysk", WORKERDIR, "tmpfs", 0, "mode=755")) exit(1);
+ 
+     // Use isolated devpts if kernel support
+     if (access("/dev/pts/ptmx", F_OK) == 0) {
+diff --git a/native/src/init/mount.rs b/native/src/init/mount.rs
+--- a/native/src/init/mount.rs
++++ b/native/src/init/mount.rs
+@@ -78,7 +78,7 @@
+         debug!("Setup data tmp");
+         cstr!("/data").mkdir(0o755).log_ok();
+         nix::mount::mount(
+-            Some(cstr!("magisk")),
++            Some(cstr!("egysk")),
+             cstr!("/data"),
+             Some(cstr!("tmpfs")),
+             MsFlags::empty(),
+@@ -87,9 +87,11 @@
+         .check_os_err("mount", Some("/data"), Some("tmpfs"))
+         .log_ok();
+ 
+-        cstr!("/init").copy_to(cstr!("/data/magiskinit")).ok();
+-        cstr!("/.backup").copy_to(cstr!("/data/.backup")).ok();
+-        cstr!("/overlay.d").copy_to(cstr!("/data/overlay.d")).ok();
++        if cstr!("/init").copy_to(cstr!("/data/egyskinit")).is_err()
++            || cstr!("/.egysk-backup").copy_to(cstr!("/data/.egysk-backup")).is_err()
++            || cstr!("/egysk-overlay.d").copy_to(cstr!("/data/egysk-overlay.d")).is_err() {
++            egysk_runtime::fatal_boot("native RAM payload retention failed");
++        }
+     }
+ 
+     pub(crate) fn exec_init(&mut self) {
+diff --git a/native/src/init/selinux.rs b/native/src/init/selinux.rs
+--- a/native/src/init/selinux.rs
++++ b/native/src/init/selinux.rs
+@@ -61,7 +61,9 @@
+ 
+ impl MagiskInit {
+     pub(crate) fn handle_sepolicy(&mut self) {
+-        self.handle_sepolicy_impl().ok();
++        if self.handle_sepolicy_impl().is_err() {
++            egysk_runtime::fatal_boot("native policy setup failed; see kernel log");
++        }
+     }
+ 
+     fn cleanup_and_load(&self, rules: &str) {
+@@ -72,9 +74,14 @@
+         SELINUX_REQPROT.unmount().ok();
+ 
+         let mut sepol = SePolicy::from_file(MOCK_LOAD);
++        if sepol._impl.is_null() { egysk_runtime::fatal_boot("native policy parse failed"); }
+         sepol.magisk_rules();
++        crate::product_policy::bootstrap(&mut sepol);
+         sepol.load_rules(rules);
+-        sepol.to_file(SELINUX_LOAD);
++        if !sepol.to_file(SELINUX_LOAD) {
++            egysk_runtime::fatal_boot("native policy load failed");
++        }
++        crate::product_policy::label_files();
+ 
+         // For some reason, restorecon on /init won't work in some cases
+         cstr!("/init")
+@@ -89,7 +96,9 @@
+     fn handle_sepolicy_impl(&mut self) -> LoggedResult<()> {
+         cstr!(SELINUXMOCK).mkdir(0o711)?;
+ 
+-        let mut rules = String::new();
++        let mut rules = std::fs::read_to_string("module-policy").unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("missing early module policy: {error}"))
++        });
+         let mut policy_ver = cstr!("/selinux_version");
+         let rule_file = cstr!(concatcp!("/data/", PREINITMIRR, "/sepolicy.rule"));
+         if rule_file.exists() {
+@@ -119,7 +128,7 @@
+                 strat = SePatchStrategy::Legacy;
+             } else {
+                 error!("Unknown sepolicy setup, abort...");
+-                return Ok(());
++                return base::log_err!("Unknown policy setup");
+             }
+         }
+ 
+@@ -180,6 +189,7 @@
+ 
+         // Create a new process waiting for init operations
+         let pid = unsafe { libc::fork() };
++        if pid < 0 { return base::log_err!("fork policy loader failed"); }
+         if pid != 0 {
+             return Ok(());
+         }
+@@ -232,9 +242,14 @@
+                 preload_policy().remove()?;
+                 preload_ack().remove()?;
+ 
+-                sepol.magisk_rules();
++                if sepol._impl.is_null() { egysk_runtime::fatal_boot("native policy parse failed"); }
++        sepol.magisk_rules();
++        crate::product_policy::bootstrap(&mut sepol);
+                 sepol.load_rules(&rules);
+-                sepol.to_file(SELINUX_LOAD);
++                if !sepol.to_file(SELINUX_LOAD) {
++            egysk_runtime::fatal_boot("native policy load failed");
++        }
++        crate::product_policy::label_files();
+ 
+                 self.restore_overlay_contexts();
+ 
+diff --git a/native/src/init/getinfo.cpp b/native/src/init/getinfo.cpp
+--- a/native/src/init/getinfo.cpp
++++ b/native/src/init/getinfo.cpp
+@@ -173,7 +173,7 @@
+     set(parse_cmdline(full_read("/proc/cmdline")));
+     set(parse_bootconfig(full_read("/proc/bootconfig")));
+ 
+-    parse_prop_file("/.backup/.magisk", [&](auto key, auto value) -> bool {
++    parse_prop_file("/.egysk-backup/.magisk", [&](auto key, auto value) -> bool {
+         if (key == "RECOVERYMODE" && value == "true") {
+             skip_initramfs = emulator || !check_key_combo();
+             return false;
+diff --git a/native/src/init/twostage.rs b/native/src/init/twostage.rs
+--- a/native/src/init/twostage.rs
++++ b/native/src/init/twostage.rs
+@@ -17,7 +17,7 @@
+ 
+     // Redirect original init to magiskinit
+     let from = "/system/bin/init";
+-    let to = "/data/magiskinit";
++    let to = "/data/egyskinit";
+     let v = init.patch(from.as_bytes(), to.as_bytes());
+     #[allow(unused_variables)]
+     for off in &v {
+@@ -95,10 +95,10 @@
+             debug!("Bind mount /sdcard -> /sdcard");
+         } else {
+             // Binding mounting from rootfs is not supported before Linux 3.12
+-            cstr!("/data/magiskinit")
++            cstr!("/data/egyskinit")
+                 .bind_mount_to(cstr!("/sdcard"), false)
+                 .log_ok();
+-            debug!("Bind mount /data/magiskinit -> /sdcard");
++            debug!("Bind mount /data/egyskinit -> /sdcard");
+         }
+     }
+ }
+diff --git a/native/src/init/init.hpp b/native/src/init/init.hpp
+--- a/native/src/init/init.hpp
++++ b/native/src/init/init.hpp
+@@ -1,11 +1,11 @@
+ #pragma once
+ 
+ #define DEFAULT_DT_DIR "/proc/device-tree/firmware/android"
+-#define REDIR_PATH "/data/magiskinit"
++#define REDIR_PATH "/data/egyskinit"
+ 
+-#define PRELOAD_LIB    "/dev/preload.so"
+-#define PRELOAD_POLICY "/dev/sepolicy"
+-#define PRELOAD_ACK    "/dev/ack"
++#define PRELOAD_LIB    "/dev/egysk-preload.so"
++#define PRELOAD_POLICY "/dev/egysk-sepolicy"
++#define PRELOAD_ACK    "/dev/egysk-ack"
+ 
+ #ifdef __cplusplus
+ 
+@@ -16,7 +16,6 @@
+ 
+ #include "init-rs.hpp"
+ 
+-int magisk_proxy_main(int, char *argv[]);
+ Utf8CStr backup_init();
+ 
+ // Expose some constants to Rust
+diff --git a/build.py b/build.py
+--- a/build.py
++++ b/build.py
+@@ -203,7 +203,10 @@
+     cmds.clear()
+ 
+     if "magiskinit" in targets:
+-        cmds.append("B_INIT=1")
++        # Early module/storage hooks use the full static libc, not crt0's
++        # deliberately restricted libc subset.
++        run_ndk_build(["B_INIT=1"])
++        collect_ndk_build()
+ 
+     if "magiskboot" in targets:
+         cmds.append("B_BOOT=1")
+diff --git a/native/src/Android.mk b/native/src/Android.mk
+--- a/native/src/Android.mk
++++ b/native/src/Android.mk
+@@ -62,7 +62,7 @@
+     init/getinfo.cpp \
+     init/init-rs.cpp
+ 
+-LOCAL_LDFLAGS := -static
++LOCAL_LDFLAGS := -static -L$(EGYSK_STATIC_LIBDIR)
+ 
+ ifdef B_CRT0
+ LOCAL_STATIC_LIBRARIES += crt0

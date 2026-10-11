@@ -1,0 +1,45 @@
+name: Native Magisk core artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      ondk:
+        description: 'Installed Magisk ONDK r30.1 root for upstream native binaries'
+        required: true
+        type: string
+      static_ndk:
+        description: 'Installed Android NDK r29 for static Bionic libraries'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            abi: arm64-v8a
+          - arch: x86_64
+            abi: x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Build patched native Magisk core
+        env:
+          ARCH: ${{ matrix.arch }}
+          ABI: ${{ matrix.abi }}
+          ONDK: ${{ inputs.ondk }}
+          STATIC_NDK: ${{ inputs.static_ndk }}
+        run: |
+          RELEASE_DIR=$(mktemp -d "$RUNNER_TEMP/core-artifacts.XXXXXXXX")
+          echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+          python3 scripts/magisk.py --output "$GITHUB_WORKSPACE/out/Magisk-ci" build \
+            --ndk "$ONDK" --static-ndk "$STATIC_NDK" --abi "$ABI" --artifacts "$RELEASE_DIR/native"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: egysk-core-${{ matrix.arch }}
+          path: ${{ env.RELEASE_DIR }}/
+          if-no-files-found: error

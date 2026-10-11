@@ -1,8 +1,8 @@
 # Pristine vendor/Magisk: e8915d9db15f5aae93973ffe65068e34df375a6a
 # scripts/magisk.py applies exact hunk positions and bytes, never fuzz/offset.
 # Native-only product: upstream SU authorization is retained, not bypassed.
-# Egysk runtime is the stage authority. Native outer completion covers projection,
-# common scripts and runtime completion before ACK, under the daemon's lock.
+# Patched Magiskinit and MagiskD own the entire native lifecycle.
+# egysk-runtime supplies only ESP/Unix backing and early filesystem adapters.
 # Selected additive-boundary design: pristine upstream stays untouched; owned
 # product/ inputs are installed by scripts/magisk.py, never mockup userspace.
 # The resolved native Cargo.lock graph is exact patch authority; native Rust and
@@ -10,3 +10,4 @@
 0001-product-selection-and-identity.patch
 0002-lifecycle-and-projection-adapters.patch
 0003-policy-and-dependency-errors.patch
+0004-native-init-and-early-hooks.patch

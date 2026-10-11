@@ -12,14 +12,12 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
-/// Archive member the loader reads as its bootstrap configuration.
+/// Bootstrap metadata is producer input, not a runtime admission framework.
 fn config_member() -> &'static str {
-    egysk_runtime::context::BOOTSTRAP_CONFIG.trim_start_matches('/')
+    "egysk.toml"
 }
-/// Single archive entry, shared with the loader identity the runtime also copies.
-const LOADER: &str = egysk_runtime::context::LOADER;
+const LOADER: &str = "egyskinit";
 const RECEIPT: &str = "egysk-build.json";
-const HELPER: &str = egysk_runtime::context::HELPER_OBJECT;
 const LZ4_BLOCK: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
@@ -144,9 +142,19 @@ fn member(path: &str) -> Result<()> {
     ensure!(
         !matches!(
             root,
-            "init" | "ksu_config" | "ksuinit" | "esuinit" | LOADER | RECEIPT | HELPER
+            "init" | "ksu_config" | "ksuinit" | "esuinit" | LOADER | RECEIPT
         ),
         "bootstrap payload claims reserved archive entry: {path}"
+    );
+    ensure!(
+        !path
+            .split('/')
+            .any(|part| matches!(part, "egysk.ko" | "egysk.ko.compat.json")),
+        "obsolete kernel helper is forbidden: {path}"
+    );
+    ensure!(
+        path != "egysk/bin/magiskinit",
+        "duplicate initializer is forbidden"
     );
     Ok(())
 }
@@ -285,14 +293,14 @@ fn elf<'a>(bytes: &'a [u8], arch: Arch) -> Result<Elf<'a>> {
     );
     Ok(elf)
 }
-fn executable(bytes: &[u8], arch: Arch) -> Result<()> {
+fn executable(bytes: &[u8], arch: Arch, static_required: bool) -> Result<()> {
     let elf = elf(bytes, arch)?;
     ensure!(
         matches!(elf.header.e_type, header::ET_EXEC | header::ET_DYN),
         "expected executable ELF"
     );
     ensure!(
-        elf.interpreter.is_none() && elf.libraries.is_empty(),
+        !static_required || (elf.interpreter.is_none() && elf.libraries.is_empty()),
         "early executable must be static"
     );
     let mut entry_backed = false;
@@ -498,18 +506,18 @@ fn build(args: &Args) -> Result<()> {
     let mut files = BTreeMap::new();
     let mut dirs = BTreeSet::new();
     capture(&args.bootstrap_dir, Path::new(""), &mut files, &mut dirs)?;
-    let config = egysk_runtime::parse_bootstrap_config(std::str::from_utf8(
+    let config: toml::Value = toml::from_str(std::str::from_utf8(
         &files
             .get(config_member())
             .with_context(|| format!("bootstrap requires {}", config_member()))?
             .bytes,
     )?)?;
     ensure!(
-        config.kmi == kmi.directory(),
+        config.get("kmi").and_then(toml::Value::as_str) == Some(kmi.directory().as_str()),
         "bootstrap config KMI must equal selected exact generation"
     );
     let init = read_input(&artifacts.join(LOADER))?;
-    executable(&init.bytes, args.arch).context("selected rdinit binary")?;
+    executable(&init.bytes, args.arch, true).context("selected native initializer")?;
     files.insert(
         args.entry.name().to_owned(),
         Input {
@@ -517,31 +525,37 @@ fn build(args: &Args) -> Result<()> {
             mode: 0o755,
         },
     );
-    let helper_receipt = format!("{HELPER}.compat.json");
-    for name in [HELPER, helper_receipt.as_str()] {
-        ensure!(
-            !files.contains_key(name),
-            "bootstrap conflicts with selected artifact {name}"
-        );
-        files.insert(name.to_owned(), read_input(&artifacts.join(name))?);
+    for name in [
+        "egysk/bin/egyskd",
+        "egysk/bin/magiskpolicy",
+        "egysk/bin/busybox",
+        "egysk/modules/lkm-loader/bin/lkm-loader",
+    ] {
+        let input = files
+            .get(name)
+            .with_context(|| format!("bootstrap requires {name}"))?;
+        executable(
+            &input.bytes,
+            args.arch,
+            !matches!(name, "egysk/bin/egyskd" | "egysk/bin/magiskpolicy"),
+        )
+        .with_context(|| format!("payload {name}"))?;
+        ensure!(input.mode == 0o755, "{name} must be executable");
     }
-    for module in &config.critical_modules {
-        let path = module.path.trim_start_matches('/');
+    for name in ["module.prop", "pid1.sh", "modules.load"] {
         ensure!(
-            path.ends_with(".ko") && files.contains_key(path),
-            "critical module missing from archive: {path}"
-        );
-        let internal = Path::new(path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .context("invalid critical module path")?
-            .replace('-', "_");
-        ensure!(
-            module.name == internal,
-            "critical module name/path mismatch: {}",
-            module.name
+            files.contains_key(&format!("egysk/modules/lkm-loader/{name}")),
+            "bootstrap requires lkm-loader/{name}"
         );
     }
+    let preload = files
+        .get("egysk/bin/init-ld")
+        .context("bootstrap requires upstream init-ld")?;
+    let preload_elf = elf(&preload.bytes, args.arch)?;
+    ensure!(
+        preload_elf.header.e_type == header::ET_DYN && preload_elf.interpreter.is_none(),
+        "init-ld must be a shared ELF without an interpreter"
+    );
     for (name, input) in &files {
         if name.ends_with(".ko") {
             let receipt = files
@@ -549,8 +563,13 @@ fn build(args: &Args) -> Result<()> {
                 .with_context(|| format!("missing receipt for {name}"))?;
             verify_module(name, input, receipt, &kmi, args.arch)
                 .with_context(|| format!("verify {name}"))?;
-        } else if input.bytes.starts_with(b"\x7fELF") {
-            executable(&input.bytes, args.arch).with_context(|| format!("early payload {name}"))?;
+        } else if name != "egysk/bin/init-ld" && input.bytes.starts_with(b"\x7fELF") {
+            executable(
+                &input.bytes,
+                args.arch,
+                !matches!(name.as_str(), "egysk/bin/egyskd" | "egysk/bin/magiskpolicy"),
+            )
+            .with_context(|| format!("payload {name}"))?;
         }
     }
     let receipt = BuildReceipt {

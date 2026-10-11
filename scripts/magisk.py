@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize the pinned native product exactly, then optionally build egyskd/policy.
+"""Materialize the pinned native product exactly, then optionally build init/daemon/policy.
 
 The pristine submodule is never patched. Hunk positions and every old/context byte
 must match; unlike git apply/patch this deliberately has no offset or fuzz search.
@@ -10,13 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path, PurePosixPath
 
 PIN = "e8915d9db15f5aae93973ffe65068e34df375a6a"
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,11 +155,12 @@ def install_product(tree: Path) -> set[str]:
     )
     destination = tree / "product"
     destination.mkdir()
-    for name in ("identity.json", "dispatch.rs"):
+    sources = ("identity.json", "dispatch.rs", "init.rs", "init_policy.rs")
+    for name in sources:
         shutil.copy2(PRODUCT / name, destination / name)
     for name, contents in (("identity.rs", rust), ("identity.hpp", cpp)):
         (destination / name).write_text(contents)
-    return {f"product/{name}" for name in ("identity.json", "dispatch.rs", "identity.rs", "identity.hpp")}
+    return {f"product/{name}" for name in (*sources, "identity.rs", "identity.hpp")}
 
 
 def materialize(output: Path, check: bool, dependencies: bool) -> None:
@@ -203,19 +204,31 @@ def build(args: argparse.Namespace) -> None:
     ndk = args.ndk.resolve()
     if not (ndk / "ndk-build").is_file():
         raise ValueError(f"missing provisioned ONDK: {ndk}")
+    static_ndk = args.static_ndk.resolve()
+    revision = (static_ndk / "source.properties").read_text()
+    if not re.search(r"^Pkg\.Revision\s*=\s*29\.", revision, re.MULTILINE):
+        raise ValueError("Magiskinit requires Android NDK r29 static libraries")
+    triples = {"arm64-v8a": "aarch64-linux-android", "armeabi-v7a": "arm-linux-androideabi",
+               "x86_64": "x86_64-linux-android", "x86": "i686-linux-android",
+               "riscv64": "riscv64-linux-android"}
+    static_libdir = static_ndk / "toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib" / triples[args.abi]
+    if not (static_libdir / "libc.a").is_file():
+        raise ValueError(f"missing static Bionic libraries: {static_libdir}")
     env = os.environ.copy()
     env["MAGISK_ONDK"] = str(ndk)
+    env["EGYSK_STATIC_LIBDIR"] = str(static_libdir)
     env.setdefault("ANDROID_HOME", str(ndk.parent.parent))
     config = args.output / "egysk-build.prop"
     config.write_text(f"abiList={args.abi}\nversion=egysk-{PIN[:8]}\nversionCode=1000000\n")
     command = [sys.executable, args.output / "build.py", "-v", "-c", config]
     if not args.debug:
         command.append("-r")
-    run(*command, "native", "magisk", "magiskpolicy", cwd=args.output, env=env)
+    run(*command, "native", "magisk", "magiskinit", "magiskpolicy", cwd=args.output, env=env)
     destination = args.artifacts.resolve() / args.abi / "bin"
     destination.mkdir(parents=True, exist_ok=True)
-    for name in ("egyskd", "magiskpolicy"):
-        shutil.copy2(args.output / "native/out" / args.abi / name, destination / name)
+    for source, name in (("egyskd", "egyskd"), ("magiskinit", "egyskinit"), ("magiskpolicy", "magiskpolicy")):
+        shutil.copy2(args.output / "native/out" / args.abi / source, destination / name)
+    shutil.copy2(args.output / "native/out" / args.abi / "libinit-ld.so", destination / "init-ld")
     flags = (args.output / "native/out/generated/flags.h").read_text()
     version = re.search(r'^#define MAGISK_VERSION\s+"([^"]+)"$', flags, re.MULTILINE)
     code = re.search(r"^#define MAGISK_VER_CODE\s+(\d+)$", flags, re.MULTILINE)
@@ -242,6 +255,7 @@ def main() -> None:
     material.add_argument("--init-dependencies", action="store_true")
     native = actions.add_parser("build")
     native.add_argument("--ndk", type=Path, required=True, help="provisioned Magisk ONDK r30.1")
+    native.add_argument("--static-ndk", type=Path, required=True, help="Android NDK r29 static Bionic libraries")
     native.add_argument("--abi", choices=("arm64-v8a", "armeabi-v7a", "x86_64", "x86", "riscv64"), default="arm64-v8a")
     native.add_argument("--debug", action="store_true")
     native.add_argument("--artifacts", type=Path, default=ROOT / "out/native")

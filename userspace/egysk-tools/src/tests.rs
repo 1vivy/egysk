@@ -15,10 +15,7 @@ fn args(root: &Path, kmi: &str) -> Args {
 
 #[test]
 fn entry_option_accepts_only_the_shared_loader_identity() {
-    assert_eq!(
-        Entry::from_str("egyskinit", true).unwrap().name(),
-        egysk_runtime::context::LOADER
-    );
+    assert_eq!(Entry::from_str("egyskinit", true).unwrap().name(), LOADER);
     for alias in ["ksuinit", "esuinit"] {
         assert!(
             Entry::from_str(alias, true).is_err(),
@@ -118,4 +115,15 @@ fn legacy_framing_roundtrips_a_full_block_and_partial_final_block() {
         0,
         "no trailer masquerading as another block"
     );
+}
+
+#[test]
+fn bootstrap_rejects_obsolete_helper_at_every_archive_depth() {
+    for path in ["egysk.ko", "egysk.ko.compat.json", "egysk/modules/egysk.ko"] {
+        assert!(member(path).is_err(), "{path}");
+    }
+    assert!(member("egysk/bin/magiskinit").is_err());
+    assert!(member("egysk/bin/egyskd").is_ok());
+    assert!(member("egysk/bin/init-ld").is_ok());
+    assert!(member("modules/efivar_store.ko").is_ok());
 }

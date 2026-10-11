@@ -265,12 +265,10 @@ pub fn mount(
             options.as_ptr().cast(),
         )
     };
-    ensure!(
-        rc == 0,
-        "mount {}: {}",
-        target.display(),
-        std::io::Error::last_os_error()
-    );
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("mount {}", target.display()));
+    }
     Ok(())
 }
 pub fn unmount(path: &Path) -> Result<()> {

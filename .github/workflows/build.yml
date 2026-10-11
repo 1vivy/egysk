@@ -3,18 +3,16 @@ name: Build
 on:
   push:
     branches: [main, dev, ci]
-    paths: ['.github/**', 'kernel/**', 'uapi/**', 'userspace/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
+    paths: ['.github/**', 'userspace/**', 'product/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
   pull_request:
     branches: [main, dev]
-    paths: ['.github/**', 'kernel/**', 'uapi/**', 'userspace/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
+    paths: ['.github/**', 'userspace/**', 'product/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
   workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  build-init:
-    uses: ./.github/workflows/init.yml
   build-native:
     strategy:
       matrix:

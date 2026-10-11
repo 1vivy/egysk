@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 pub fn valued_flag(root: &Path, name: &str) -> Result<bool> {
     if let Some(value) = fsu::optional_text(&root.join(name), 64)? {
-        return Ok(matches!(value.trim(), "1" | "true"));
+        return Ok(matches!(value.trim(), "1" | "true")
+            || (value.trim().is_empty() && matches!(name, "disable" | "remove" | "skip_mount")));
     }
     let Some(prop) = fsu::optional_text(&root.join("module.prop"), 65536)? else {
         return Ok(false);
@@ -113,36 +114,18 @@ pub fn discover(config: &BootstrapConfig, mode: BootMode) -> Result<Vec<Module>>
                 None => valued_flag(&directory, flag),
             }
         };
-        let critical = match valued_flag(&directory, "critical") {
-            Ok(critical) => critical,
-            Err(error) => {
-                log::warn!("reject package {id} with unreadable criticality: {error:#}");
-                continue;
-            }
-        };
-        let selected = (|| -> Result<Option<Module>> {
-            if overridden("disable")? || overridden("remove")? {
-                return Ok(None);
-            }
-            if mode == BootMode::Recovery && !valued_flag(&directory, "recovery_ok")? {
-                return Ok(None);
-            }
-            identify(&directory, &id)?;
-            Ok(Some(Module {
-                id: id.clone(),
-                generation: current_generation(&directory, owner)?,
-                owner,
-                critical,
-                skip_mount: valued_flag(&directory, "skip_mount")?,
-                services: Vec::new(),
-            }))
-        })();
-        match selected {
-            Ok(Some(module)) => result.push(module),
-            Ok(None) => {}
-            Err(error) if critical => return Err(error),
-            Err(error) => log::warn!("reject optional package {id}: {error:#}"),
+        if overridden("disable")? || overridden("remove")? {
+            continue;
         }
+        if mode == BootMode::Recovery && !valued_flag(&directory, "recovery_ok")? {
+            continue;
+        }
+        identify(&directory, &id)?;
+        result.push(Module {
+            generation: current_generation(&directory, owner)?,
+            id,
+            owner,
+        });
     }
     Ok(result)
 }
@@ -394,9 +377,6 @@ pub fn activate_pending(mode: BootMode, backing_root: &str) -> Result<()> {
                     id: id.to_owned(),
                     generation: current_generation(&lower, owner)?,
                     owner,
-                    critical: true,
-                    skip_mount: true,
-                    services: Vec::new(),
                 };
                 let mounts = mount_view(std::slice::from_ref(&module), ViewStage::Rdinit)?;
                 let result = crate::scripts::run_one(

@@ -1,4 +1,4 @@
-use egysk_runtime::{Stage, boot_mode, context::*, fsutil, helper, parse_bootstrap_config, store};
+use egysk_runtime::{boot_mode, context::*, fsutil, parse_bootstrap_config, store};
 use std::fs;
 use std::path::Path;
 
@@ -21,14 +21,21 @@ rdinit = ["identity", "storage", "projection"]
 }
 
 #[test]
-fn shared_package_does_not_pin_boots_to_its_initial_kmi() {
-    let package = config();
-    for kmi in ["android16-6.12-6", "android15-6.6-10"] {
-        let mut bootstrap = config();
-        bootstrap.kmi = kmi.into();
-        let selected = package.clone().for_boot(bootstrap).unwrap();
-        assert_eq!(selected.kmi, kmi);
-    }
+fn producer_only_kernel_selection_is_not_a_runtime_contract() {
+    let text = r#"
+        kmi = "producer-only"
+        critical_modules = [{ name = "loader-owned", path = "/module.ko" }]
+        [backing]
+        kind = "filesystem"
+        source = "/metadata"
+        fs_type = "f2fs"
+        mount_at = "/dev/egysk/metadata"
+        helper = "gobbl-runtime"
+    "#;
+    let config = parse_bootstrap_config(text).unwrap();
+    let saved = serde_json::to_string(&config).unwrap();
+    assert!(!saved.contains("kmi"));
+    assert!(!saved.contains("critical_modules"));
 }
 
 #[test]
@@ -39,58 +46,7 @@ fn shared_package_cannot_redirect_the_bootstrap_backing() {
 }
 
 #[test]
-fn descriptor_roundtrip_retains_exact_selection_and_order() {
-    let descriptor = Descriptor {
-        version: 1,
-        esp_major: 259,
-        esp_minor: 5,
-        backing_device: 123,
-        config: config(),
-        mode: BootMode::Normal,
-        modules: vec![
-            Module {
-                id: "second".into(),
-                generation: "ab".repeat(32),
-                owner: Owner::Esp,
-                critical: true,
-                skip_mount: false,
-                services: vec![ServiceSpec {
-                    name: "egysk-second-hal".into(),
-                    stage: Some("post-fs".into()),
-                }],
-            },
-            Module {
-                id: "first".into(),
-                generation: "cd".repeat(32),
-                owner: Owner::Local,
-                critical: false,
-                skip_mount: true,
-                services: Vec::new(),
-            },
-        ],
-    };
-    let decoded = Descriptor::decode(&descriptor.encode().unwrap()).unwrap();
-    assert_eq!(decoded.esp_major, 259);
-    assert_eq!(decoded.backing_device, 123);
-    assert_eq!(decoded.config.backing, descriptor.config.backing);
-    assert_eq!(
-        decoded
-            .modules
-            .iter()
-            .map(|m| m.id.as_str())
-            .collect::<Vec<_>>(),
-        ["second", "first"]
-    );
-    assert_eq!(decoded.modules[1].owner, Owner::Local);
-    assert!(decoded.modules[1].skip_mount);
-    let mut invalid = descriptor;
-    invalid.modules[1].id = "../escape".into();
-    assert!(invalid.encode().is_err());
-    assert!(Descriptor::decode("0x").is_err());
-}
-
-#[test]
-fn flags_are_values_not_presence_and_files_override_properties() {
+fn property_flags_and_conventional_magisk_markers_are_supported() {
     let root = tempfile::tempdir().unwrap();
     fs::write(
         root.path().join("module.prop"),
@@ -107,6 +63,12 @@ fn flags_are_values_not_presence_and_files_override_properties() {
     for value in ["1", "true", "true\n"] {
         fs::write(root.path().join("critical"), value).unwrap();
         assert!(store::valued_flag(root.path(), "critical").unwrap());
+    }
+    for marker in ["disable", "remove", "skip_mount"] {
+        fs::write(root.path().join(marker), "").unwrap();
+        assert!(store::valued_flag(root.path(), marker).unwrap());
+        fs::write(root.path().join(marker), "0").unwrap();
+        assert!(!store::valued_flag(root.path(), marker).unwrap());
     }
     assert!(store::identify(root.path(), "other").is_err());
     fs::write(root.path().join("module.prop"), "id=test\nid=test\n").unwrap();
@@ -137,31 +99,7 @@ fn generation_is_content_sensitive_and_safe_links_are_preserved() {
 }
 
 #[test]
-fn policy_expansion_is_serialized_and_bounded() {
-    let (bytes, atoms) = helper::compile_policy(
-        "type egysk_test domain\nallow egysk_test { a b } file { read write }; # comment\n",
-    )
-    .unwrap();
-    assert_eq!(atoms, 5);
-    assert_eq!(&bytes[..4], &4u32.to_ne_bytes());
-    assert!(helper::compile_policy("allow { } target file read").is_err());
-    assert!(helper::compile_policy("unknown a b c d").is_err());
-    let set = format!(
-        "{{ {} }}",
-        (0..100)
-            .map(|i| format!("a{i}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    assert!(helper::compile_policy(&format!("allow {set} {set} file read")).is_err());
-}
-
-#[test]
-fn stage_names_and_boot_modes_are_userspace_owned() {
-    for stage in Stage::ALL {
-        assert_eq!(stage.as_str().parse::<Stage>().unwrap(), stage);
-    }
-    assert!("postfs".parse::<Stage>().is_err());
+fn boot_mode_and_storage_config_remain_userspace_owned() {
     assert_eq!(
         boot_mode(
             "androidboot.mode = \"recovery\"",
@@ -180,9 +118,6 @@ fn stage_names_and_boot_modes_are_userspace_owned() {
     );
     assert_eq!(boot_mode("", "", true), BootMode::Recovery);
     let mut value = config();
-    value.kmi = "android16-6.12".into();
-    assert!(value.validate().is_err());
-    value = config();
     value.backing.source = Some("/dev/../metadata".into());
     assert!(value.validate().is_err());
     value = config();
@@ -251,40 +186,4 @@ fn foreground_stderr_cannot_fill_the_pipe_and_hide_the_failure_tail() {
     let detail = error.to_string();
     assert!(detail.ends_with("final failure cause"));
     assert!(detail.len() < 1024);
-}
-
-#[test]
-fn policy_commands_keep_the_frozen_uapi_header_values() {
-    for (statement, command, subcommand) in [
-        ("allow a b file read", 1u32, 1u32),
-        ("deny a b file write", 1, 2),
-        ("auditallow a b file read", 1, 3),
-        ("dontaudit a b file read", 1, 4),
-        ("allowxperm a b chr_file ioctl 0x1234", 2, 1),
-        ("auditallowxperm a b chr_file ioctl 0x1234", 2, 2),
-        ("dontauditxperm a b chr_file ioctl 0x1234", 2, 3),
-        ("permissive a", 3, 1),
-        ("enforce a", 3, 2),
-        ("type a", 4, 0),
-        ("typeattribute a domain", 5, 0),
-        ("attribute a", 6, 0),
-        ("type_transition a b file c", 7, 0),
-        ("type_change a b file c", 8, 1),
-        ("type_member a b file c", 8, 2),
-        ("genfscon ext4 /example u:object_r:egysk_file:s0", 9, 0),
-    ] {
-        let (bytes, count) = helper::compile_policy(statement).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(&bytes[..4], &command.to_ne_bytes());
-        assert_eq!(&bytes[4..8], &subcommand.to_ne_bytes());
-    }
-    let (bytes, _) = helper::compile_policy("type a").unwrap();
-    let mut expected = Vec::new();
-    for word in [4u32, 0, 1] {
-        expected.extend_from_slice(&word.to_ne_bytes());
-    }
-    expected.extend_from_slice(b"a\0");
-    expected.extend_from_slice(&6u32.to_ne_bytes());
-    expected.extend_from_slice(b"domain\0");
-    assert_eq!(bytes, expected);
 }

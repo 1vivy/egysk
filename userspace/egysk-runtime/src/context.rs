@@ -1,10 +1,4 @@
-//! Wire contract between rdinit, Android reconstruction and the native daemon.
-//! `/egysk.toml` is the cpio bootstrap configuration. The selected ESP's
-//! `egysk/egysk.toml` uses the same schema and must agree on backing. The
-//! current ramdisk selects KMI independently of the shared package's initial set.
-//! Descriptor v1 is JSON encoded as lowercase hex in the one-pass init RC. It is
-//! not rediscovered after handoff: device, backing, admission, order and package
-//! generations are carried verbatim. No ROM identity selects module storage.
+//! ESP storage configuration and Unix view metadata, shared with offline producers.
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,26 +11,24 @@ pub const BIN: &str = "/dev/egysk/bin";
 pub const STORE: &str = "/dev/egysk/store";
 pub const MODULES: &str = "/dev/egysk/modules";
 pub const LOWERS: &str = "/dev/egysk/lowers";
-pub const SOURCE: &str = "/dev/egysk/source";
 pub const BOOTSTRAP_CONFIG: &str = "/egysk.toml";
 pub const PACKAGE_CONFIG: &str = "/dev/esp/egysk/egysk.toml";
 pub const INDEPENDENT_BIN: &str = "/egysk/bin";
 pub const DEVICE_DIR: &str = "/dev/egysk/devices";
-pub const SELECTED_ESP: &str = "/dev/block/egysk-selected";
-pub const SELECTED_BACKING: &str = "/dev/block/egysk-backing-selected";
+pub const SELECTED_ESP: &str = "/dev/egysk/devices/esp";
+pub const SELECTED_BACKING: &str = "/dev/egysk/devices/backing";
 pub const RD: &str = "/dev/egysk/rd";
 pub const DAEMON: &str = "egyskd";
-pub const LOADER: &str = "egyskinit";
 pub const POLICY_TOOL: &str = "magiskpolicy";
-pub const HELPER_MODULE: &str = "egysk";
-pub const HELPER_OBJECT: &str = "egysk.ko";
-pub const DOMAIN: &str = "u:r:egysk:s0";
+pub const INIT_PRELOAD: &str = "init-ld";
 pub const FILE_CONTEXT: &str = "u:object_r:egysk_file:s0";
-pub const MODULE_PROPERTY_PREFIX: &str = "egysk.module.";
-pub const STAGE_PROPERTY_PREFIX: &str = "egysk.stage.";
-pub const SERVICE_PREFIX: &str = "egysk-";
-pub const BOOTSTRAP_TOOLS: [&str; 5] =
-    [DAEMON, "busybox", POLICY_TOOL, "util_functions.sh", LOADER];
+pub const BOOTSTRAP_TOOLS: [&str; 5] = [
+    DAEMON,
+    "busybox",
+    POLICY_TOOL,
+    "util_functions.sh",
+    INIT_PRELOAD,
+];
 
 // Persisted storage-format markers, not executable/product aliases. Keeping
 // these bytes preserves generation identity and interrupted activation journals
@@ -44,28 +36,23 @@ pub const BOOTSTRAP_TOOLS: [&str; 5] =
 pub const GENERATION_MARKER: &str = ".esp-generation";
 pub const TRANSACTION_TEMP_EXTENSION: &str = "esp-tmp";
 
-/// The same mount specification rendered by stock init and issued by PID1.
-/// Execution, ownership tracking and error handling remain context-specific.
+/// Owned filesystem mount options shared by the native storage entry points.
 pub struct MountSpec {
     pub fs_type: &'static str,
     pub flags: libc::c_ulong,
     pub data: &'static str,
-    pub init_options: &'static str,
 }
 pub const ESP_MOUNT: MountSpec = MountSpec {
     fs_type: "vfat",
     flags: libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
     data: "uid=0,gid=0,fmask=0022,dmask=0022",
-    init_options: "rw,nosuid,nodev,noexec,uid=0,gid=0,fmask=0022,dmask=0022",
 };
 pub const EXECUTABLE_MOUNT: MountSpec = MountSpec {
     fs_type: "tmpfs",
     flags: libc::MS_NOSUID | libc::MS_NODEV,
     data: "mode=0755",
-    init_options: "nosuid,nodev,mode=0755",
 };
 pub const MOUNT_SOURCE: &str = "egysk";
-pub const MAX_DESCRIPTOR: usize = 24576;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -86,24 +73,11 @@ pub struct Backing {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KernelModule {
-    pub name: String,
-    pub path: String,
-    #[serde(default)]
-    pub params: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+// Producer-only KMI and LKM fields are intentionally not deserialized.
 pub struct BootstrapConfig {
     #[serde(default)]
     pub esp_device: Option<String>,
-    /// Exact `<branch>-<generation>`, never a branch-only selector.
-    pub kmi: String,
     pub backing: Backing,
-    #[serde(default)]
-    pub critical_modules: Vec<KernelModule>,
     /// Additional script barriers: stage.sh first, then stage.<phase>.sh in this order.
     #[serde(default)]
     pub phases: BTreeMap<String, Vec<String>>,
@@ -115,6 +89,18 @@ pub struct BootstrapConfig {
     #[serde(default)]
     pub norc: bool,
 }
+
+pub const HOOKS: &[&str] = &[
+    "rdinit",
+    "early-init",
+    "init",
+    "early-fs",
+    "post-fs",
+    "post-fs-data",
+    "post-mount",
+    "service",
+    "boot-completed",
+];
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -133,34 +119,10 @@ pub enum Owner {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ServiceSpec {
-    pub name: String,
-    /// None preserves an explicitly disabled service's dynamic RC triggers.
-    pub stage: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Module {
     pub id: String,
     pub generation: String,
     pub owner: Owner,
-    pub critical: bool,
-    pub skip_mount: bool,
-    pub services: Vec<ServiceSpec>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Descriptor {
-    pub version: u32,
-    pub esp_major: u32,
-    pub esp_minor: u32,
-    /// Stable filesystem device identity of the helper's owned subtree.
-    pub backing_device: u64,
-    pub config: BootstrapConfig,
-    pub mode: BootMode,
-    pub modules: Vec<Module>,
 }
 
 pub fn identifier(value: &str) -> Result<()> {
@@ -200,22 +162,12 @@ impl BootstrapConfig {
             bootstrap.backing == self.backing,
             "cpio/package backing mismatch"
         );
-        self.kmi = bootstrap.kmi;
         self.safe_mode |= bootstrap.safe_mode;
         self.norc |= bootstrap.norc;
         Ok(self)
     }
 
     pub fn validate(&self) -> Result<()> {
-        identifier(&self.kmi)?;
-        ensure!(
-            self.kmi
-                .rsplit_once('-')
-                .is_some_and(|(branch, generation)| !branch.is_empty()
-                    && !generation.is_empty()
-                    && generation.bytes().all(|b| b.is_ascii_digit())),
-            "KMI must include exact generation"
-        );
         ensure!(
             matches!(self.backing.kind.as_str(), "block" | "filesystem"),
             "invalid backing kind"
@@ -243,14 +195,9 @@ impl BootstrapConfig {
         for name in &self.tools {
             identifier(name)?;
         }
-        for module in &self.critical_modules {
-            identifier(&module.name)?;
-            absolute(&module.path)?;
-            ensure!(!module.params.contains('\0'), "NUL in module parameters");
-        }
         for (stage, phases) in &self.phases {
             ensure!(
-                stage == "rdinit" || stage.parse::<crate::Stage>().is_ok(),
+                HOOKS.contains(&stage.as_str()),
                 "unknown phase stage {stage}"
             );
             let mut seen = BTreeSet::new();
@@ -260,69 +207,5 @@ impl BootstrapConfig {
             }
         }
         Ok(())
-    }
-}
-
-impl Descriptor {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(self.version == 1, "unknown boot descriptor version");
-        self.config.validate()?;
-        let mut ids = BTreeSet::new();
-        for module in &self.modules {
-            identifier(&module.id)?;
-            ensure!(
-                module.generation.len() == 64
-                    && module.generation.bytes().all(|b| b.is_ascii_hexdigit()),
-                "invalid package generation"
-            );
-            ensure!(ids.insert(&module.id), "duplicate admitted module");
-            let mut services = BTreeSet::new();
-            for service in &module.services {
-                identifier(&service.name)?;
-                ensure!(
-                    service
-                        .name
-                        .starts_with(&format!("{SERVICE_PREFIX}{}-", module.id))
-                        && services.insert(&service.name),
-                    "invalid/duplicate owned service"
-                );
-                if let Some(stage) = &service.stage {
-                    stage.parse::<crate::Stage>()?;
-                }
-            }
-        }
-        ensure!(
-            !self.config.safe_mode || self.modules.is_empty(),
-            "safe mode descriptor admits modules"
-        );
-        Ok(())
-    }
-    pub fn encode(&self) -> Result<String> {
-        self.validate()?;
-        let json = serde_json::to_vec(self)?;
-        ensure!(
-            json.len() <= MAX_DESCRIPTOR,
-            "boot descriptor exceeds RC bound"
-        );
-        let mut encoded = String::with_capacity(json.len() * 2);
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        for byte in json {
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 15) as usize] as char);
-        }
-        Ok(encoded)
-    }
-    pub fn decode(hex: &str) -> Result<Self> {
-        ensure!(
-            hex.len() <= MAX_DESCRIPTOR * 2 && hex.len().is_multiple_of(2) && hex.is_ascii(),
-            "invalid descriptor encoding"
-        );
-        let bytes = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-            .collect::<Result<Vec<_>, _>>()?;
-        let descriptor: Self = serde_json::from_slice(&bytes)?;
-        descriptor.validate()?;
-        Ok(descriptor)
     }
 }

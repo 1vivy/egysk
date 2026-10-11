@@ -2,12 +2,10 @@
 members = [
     "userspace/egysk-tools",
     "userspace/egysk-runtime",
-    "userspace/egyskinit",
 ]
 default-members = [
     "userspace/egysk-tools",
     "userspace/egysk-runtime",
-    "userspace/egyskinit",
 ]
 resolver = "3"
 exclude = ["out", "vendor"]

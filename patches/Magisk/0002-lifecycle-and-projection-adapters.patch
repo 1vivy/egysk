@@ -1,90 +1,145 @@
+diff --git a/native/src/core/lib.rs b/native/src/core/lib.rs
+--- a/native/src/core/lib.rs
++++ b/native/src/core/lib.rs
+@@ -35,6 +35,7 @@
+ compile_error!("ESP sources require egysk-product; build stock from pristine upstream");
+ const _: () = assert!(consts::EGYSK_PRODUCT, "build stock from pristine upstream");
+ mod bootstages;
++use bootstages::product_script_env;
+ #[path = "../include/consts.rs"]
+ mod consts;
+ mod daemon;
+@@ -193,6 +194,8 @@
+     }
+ 
+     extern "Rust" {
++        fn product_fatal(message: &str);
++        fn product_script_env();
+         fn android_logging();
+         fn zygisk_logging();
+         fn zygisk_close_logd();
+@@ -246,3 +249,5 @@
+         }
+     }
+ }
++
++fn product_fatal(message: &str) { egysk_runtime::fatal_boot(message) }
 diff --git a/native/src/core/bootstages.rs b/native/src/core/bootstages.rs
 --- a/native/src/core/bootstages.rs
 +++ b/native/src/core/bootstages.rs
-@@ -19,9 +19,21 @@
+@@ -1,13 +1,13 @@
+-use crate::consts::{APP_PACKAGE_NAME, BBPATH, DATABIN, MODULEROOT, SECURE_DIR};
++use crate::consts::{BBPATH, DATABIN, MODULEROOT, SECURE_DIR};
+ use crate::daemon::MagiskD;
+ use crate::db::MultiuserMode;
+ use crate::ffi::{
+-    DbEntryKey, RequestCode, check_key_combo, exec_common_scripts, exec_module_scripts,
++    DbEntryKey, RequestCode, check_key_combo, exec_common_scripts,
+     get_magisk_tmp, initialize_denylist,
+ };
+ use crate::logging::setup_logfile;
+ use crate::module::disable_modules;
+-use crate::mount::{clean_mounts, setup_preinit_dir};
++use crate::mount::clean_mounts;
+ use crate::resetprop::get_prop;
+ use crate::selinux::restorecon;
+ use base::const_format::concatcp;
+@@ -18,14 +18,21 @@
+ use std::os::unix::net::UnixStream;
  use std::process::{Command, Stdio};
  use std::sync::atomic::Ordering;
- 
-+#[path = "../../../product/dispatch.rs"]
-+mod product_events;
-+use crate::consts::EGYSK_PRODUCT;
 +use crate::socket::{Decodable, Encodable};
-+use product_events::Admission;
-+
-+#[derive(Default)]
-+pub struct BootState {
-+    stock: BootFlags,
-+    product: product_events::BootState,
-+}
-+
++#[path = "../../../product/dispatch.rs"]
++pub(crate) mod product_events;
++pub use product_events::product_script_env;
+ 
  bitflags! {
-     #[derive(Default)]
--    pub struct BootState : u32 {
-+    pub struct BootFlags : u32 {
+-    #[derive(Default)]
++    #[derive(Default, Clone, Copy)]
+     pub struct BootState : u32 {
          const PostFsDataDone = 1 << 0;
          const LateStartDone = 1 << 1;
          const BootComplete = 1 << 2;
-@@ -31,6 +43,10 @@
+         const SafeMode = 1 << 3;
++        const InitDone = 1 << 4;
++        const EarlyFsDone = 1 << 5;
++        const EarlyPostFsDone = 1 << 6;
+     }
+ }
  
- impl MagiskD {
-     fn setup_magisk_env(&self) -> bool {
-+        if EGYSK_PRODUCT {
-+            error!("Stock installation migration is excluded; use prepared ESP tools");
-+            return false;
-+        }
-         info!("* Initializing Magisk environment");
+@@ -35,31 +42,8 @@
  
          let mut buf = cstr::buf::default();
-@@ -46,11 +62,7 @@
-         }
  
-         // Alternative binaries paths
+-        for user in self.get_users() {
+-            buf.append_path(self.app_data_dir())
+-                .append_path_fmt(user)
+-                .append_path(APP_PACKAGE_NAME)
+-                .append_path("install");
+-            if buf.exists() {
+-                break;
+-            }
+-        }
+-
+-        // Alternative binaries paths
 -        let alt_bin_dirs = [
 -            cstr!("/cache/data_adb/magisk"),
 -            cstr!("/data/magisk"),
 -            &buf,
 -        ];
-+        let alt_bin_dirs = [cstr!("/cache/data_adb/magisk"), cstr!("/data/magisk"), &buf];
-         for dir in alt_bin_dirs {
-             if dir.exists() {
-                 cstr!(DATABIN).remove_all().ok();
-@@ -115,6 +127,14 @@
+-        for dir in alt_bin_dirs {
+-            if dir.exists() {
+-                cstr!(DATABIN).remove_all().ok();
+-                dir.copy_to(cstr!(DATABIN)).ok();
+-                dir.remove_all().ok();
+-            }
+-        }
+-        cstr!("/cache/data_adb").remove_all().ok();
+-
++        // Product tools are retained by Magiskinit from this boot's payload.
++        // Never discover or migrate an independent root installation.
+         // Directories in /data/adb
+         cstr!(SECURE_DIR).follow_link().chmod(0o700).log_ok();
+         cstr!(DATABIN).mkdir(0o755).log_ok();
+@@ -115,7 +99,6 @@
          setup_logfile();
          info!("** post-fs-data mode running");
  
-+        if EGYSK_PRODUCT {
-+            // Preparation and safe/mode admission completed before early events.
-+            // Do not upgrade/mutate an active lower or replay module scripts here.
-+            self.prune_su_access();
-+            exec_common_scripts(cstr!("post-fs-data"));
-+            return false;
-+        }
-+
-         self.preserve_stub_apk();
+-        self.preserve_stub_apk();
  
          // Check secure dir
-@@ -175,7 +195,7 @@
-         info!("** late_start service mode running");
+         let secure_dir = cstr!(SECURE_DIR);
+@@ -154,6 +137,9 @@
+             info!("* Safe mode triggered");
+             // Disable all modules and zygisk so next boot will be clean
+             disable_modules();
++            self.clear_early_modules().unwrap_or_else(|_| {
++                egysk_runtime::fatal_boot("safe-mode native export cleanup failed")
++            });
+             self.set_db_setting(DbEntryKey::ZygiskConfig, 0).log_ok();
+             return true;
+         }
+@@ -176,7 +162,7 @@
  
          exec_common_scripts(cstr!("service"));
--        if let Some(module_list) = self.module_list.get() {
-+        if !EGYSK_PRODUCT && let Some(module_list) = self.module_list.get() {
-             exec_module_scripts(cstr!("service"), module_list);
+         if let Some(module_list) = self.module_list.get() {
+-            exec_module_scripts(cstr!("service"), module_list);
++            product_events::hooks("service", module_list);
          }
      }
-@@ -184,6 +204,11 @@
-         setup_logfile();
-         info!("** boot-complete triggered");
  
-+        if EGYSK_PRODUCT {
-+            // The selected metadata/view was already prepared; no Manager or
-+            // stock preinit installation belongs to this product.
-+            return;
+@@ -193,21 +179,51 @@
+             secure_dir.mkdir(0o700).log_ok();
+         }
+ 
+-        setup_preinit_dir();
+-        self.ensure_manager();
++        // No manager APK or foreign preinit partition persistence in this product.
++        if let Some(modules) = self.module_list.get() {
++            product_events::hooks("boot-completed", modules);
 +        }
-         // Reset the bootloop counter once we have boot-complete
-         self.set_db_setting(DbEntryKey::BootloopCount, 0).log_ok();
- 
-@@ -200,36 +225,110 @@
+         if self.zygisk_enabled.load(Ordering::Relaxed) {
+             self.zygisk.lock().reset(true);
          }
      }
  
@@ -92,118 +147,42 @@ diff --git a/native/src/core/bootstages.rs b/native/src/core/bootstages.rs
 +    pub fn boot_stage_handler(&self, mut client: UnixStream, code: RequestCode) {
          // Make sure boot stage execution is always serialized
          let mut state = self.boot_stage_lock.lock();
-+        if EGYSK_PRODUCT {
-+            let stage = match code {
-+                RequestCode::EGYSK_STAGE => {
-+                    let Ok(name) = String::decode(&mut client) else { return };
-+                    match name.parse::<egysk_runtime::Stage>() {
-+                        Ok(stage) => stage,
-+                        Err(_) => {
-+                            1i32.encode(&mut client).log_ok();
-+                            return;
-+                        }
-+                    }
-+                }
-+                RequestCode::POST_FS_DATA => egysk_runtime::Stage::PostFsData,
-+                RequestCode::LATE_START => egysk_runtime::Stage::Service,
-+                RequestCode::BOOT_COMPLETE => egysk_runtime::Stage::BootCompleted,
-+                _ => return,
-+            };
-+            let name = stage.as_str();
-+            match state.product.admit(stage) {
-+                Ok(Admission::Duplicate) => {
-+                    0i32.encode(&mut client).log_ok();
-+                    return;
-+                }
-+                Ok(Admission::Execute(_)) => {}
-+                Err(error) => egysk_runtime::fatal_boot(&format!("{error}: {name}")),
-+            }
-+            if stage == egysk_runtime::Stage::PostFs {
-+                // Clone admitted IDs only at the single projection boundary.
-+                let ids = egysk_runtime::prepare().unwrap_or_else(|error| {
-+                    egysk_runtime::fatal_boot(&format!("prepare {name}: {error:#}"))
-+                });
-+                self.project_prepared_view(&ids);
-+            }
-+            // Reuse native common-script/logging/authorization upkeep, not
-+            // stock module discovery, upgrades or automatic system SU injection.
-+            match stage {
-+                egysk_runtime::Stage::PostFsData => {
-+                    self.post_fs_data();
-+                }
-+                egysk_runtime::Stage::Service => self.late_start(),
-+                egysk_runtime::Stage::BootCompleted => self.boot_complete(),
-+                _ => {}
-+            }
-+            egysk_runtime::run_stage(stage).unwrap_or_else(|error| {
-+                egysk_runtime::fatal_boot(&format!("stage {name}: {error:#}"))
-+            });
-+            state.product.complete(stage, egysk_runtime::publish_stage)
-+                .unwrap_or_else(|error| {
-+                    egysk_runtime::fatal_boot(&format!("publish stage {name}: {error:#}"))
-+                });
-+            0i32.encode(&mut client).log_ok();
-+            return;
-+        }
-+        let state = &mut state.stock;
  
          match code {
-             RequestCode::POST_FS_DATA
--                if check_data() && !state.contains(BootState::PostFsDataDone) =>
-+                if check_data() && !state.contains(BootFlags::PostFsDataDone) =>
-             {
-                 if self.post_fs_data() {
--                    state.insert(BootState::SafeMode);
--                }
--                state.insert(BootState::PostFsDataDone);
-+                    state.insert(BootFlags::SafeMode);
++            RequestCode::EGYSK_STAGE => {
++                let name = String::decode(&mut client).unwrap_or_else(|error| {
++                    egysk_runtime::fatal_boot(&format!("early callback: {error}"))
++                });
++                let (flag, prerequisite) = match name.as_str() {
++                    "init" => (BootState::InitDone, BootState::empty()),
++                    "early-fs" => (BootState::EarlyFsDone, BootState::InitDone),
++                    "post-fs" => (BootState::EarlyPostFsDone, BootState::EarlyFsDone),
++                    _ => { 1i32.encode(&mut client).log_ok(); return; }
++                };
++                if !state.contains(prerequisite) {
++                    egysk_runtime::fatal_boot("missing native early-stage prerequisite");
 +                }
-+                state.insert(BootFlags::PostFsDataDone);
-             }
-             RequestCode::LATE_START => {
-                 drop(client);
--                if state.contains(BootState::PostFsDataDone) && !state.contains(BootState::SafeMode)
-+                if state.contains(BootFlags::PostFsDataDone) && !state.contains(BootFlags::SafeMode)
-                 {
-                     self.late_start();
--                    state.insert(BootState::LateStartDone);
-+                    state.insert(BootFlags::LateStartDone);
++                if !state.contains(flag) {
++                    if name == "init" {
++                        self.run_early_modules("early-init");
++                    }
++                    if name == "post-fs" {
++                        self.project_early_modules();
++                    }
++                    self.run_early_modules(&name);
++                    state.insert(flag);
++                }
++                0i32.encode(&mut client).log_ok();
++            }
+             RequestCode::POST_FS_DATA
+                 if check_data() && !state.contains(BootState::PostFsDataDone) =>
+             {
++                if !state.contains(BootState::EarlyPostFsDone) {
++                    egysk_runtime::fatal_boot("post-fs-data before native early module projection");
++                }
+                 if self.post_fs_data() {
+                     state.insert(BootState::SafeMode);
                  }
-             }
-             RequestCode::BOOT_COMPLETE => {
-                 drop(client);
--                if state.contains(BootState::PostFsDataDone) {
--                    state.insert(BootState::BootComplete);
-+                if state.contains(BootFlags::PostFsDataDone) {
-+                    state.insert(BootFlags::BootComplete);
-                     self.boot_complete()
-                 }
-             }
-             _ => {}
-         }
-+    }
-+
-+    fn project_prepared_view(&self, ids: &[String]) {
-+        let system = std::fs::canonicalize("/system").unwrap_or_else(|error| {
-+            egysk_runtime::fatal_boot(&format!("system target unavailable: {error}"))
-+        });
-+        let mounts = base::parse_mount_info("self");
-+        let ready = mounts
-+            .iter()
-+            .filter(|mount| system.starts_with(&mount.target))
-+            .max_by_key(|mount| mount.target.len())
-+            .is_some_and(|mount| {
-+                !matches!(mount.fs_type.as_str(), "tmpfs" | "devtmpfs" | "rootfs")
-+            });
-+        if !system.is_dir() || !ready {
-+            egysk_runtime::fatal_boot("post-fs system target is not backed by Android filesystem");
-+        }
-+        self.project_modules(ids).unwrap_or_else(|_| {
-+            egysk_runtime::fatal_boot("magic mount failed; see native operation log")
-+        });
-     }
- }
- 
 diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
 --- a/native/src/core/daemon.rs
 +++ b/native/src/core/daemon.rs
@@ -217,19 +196,14 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
  use crate::package::ManagerInfo;
  use crate::resetprop::{get_prop, set_prop};
  use crate::selinux::restore_tmpcon;
-@@ -139,9 +138,19 @@
+@@ -139,9 +138,14 @@
              }
              RequestCode::REMOVE_MODULES => {
                  let do_reboot: bool = client.read_decodable().log().unwrap_or_default();
 -                remove_modules();
 -                client.write_pod(&0).log_ok();
 -                if do_reboot {
-+                let result = if crate::consts::EGYSK_PRODUCT {
-+                    egysk_runtime::request_remove_all()
-+                } else {
-+                    crate::module::remove_modules();
-+                    Ok(())
-+                };
++                let result = egysk_runtime::request_remove_all();
 +                if let Err(error) = &result {
 +                    base::error!("remove modules: {error:#}");
 +                }
@@ -240,7 +214,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
                      self.reboot();
                  }
              }
-@@ -198,7 +207,6 @@
+@@ -198,7 +202,6 @@
          context.rebuild().ok();
  
          let is_root = cred.uid == 0;
@@ -248,7 +222,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
          let is_zygote = &context == "u:r:zygote:s0";
  
          if !is_root && !is_zygote && !self.is_client(cred.pid.unwrap_or(-1)) {
-@@ -221,7 +229,8 @@
+@@ -221,7 +224,8 @@
  
          // Permission checks
          match code {
@@ -258,7 +232,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
              | RequestCode::LATE_START
              | RequestCode::BOOT_COMPLETE
              | RequestCode::ZYGOTE_RESTART
-@@ -233,8 +242,8 @@
+@@ -233,8 +237,8 @@
                  client.write_pod(&RespondCode::ROOT_REQUIRED.repr).log_ok();
                  return;
              }
@@ -269,7 +243,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
                  client.write_pod(&RespondCode::ACCESS_DENIED.repr).log_ok();
                  return;
              }
-@@ -279,8 +288,8 @@
+@@ -279,8 +283,8 @@
  }
  
  fn daemon_entry() {
@@ -280,7 +254,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
  
      // Block all signals
      SigSet::all().thread_set_mask().log_ok();
-@@ -296,17 +305,33 @@
+@@ -296,17 +300,36 @@
  
      setsid().log_ok();
  
@@ -307,6 +281,9 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
 +        } else {
 +            pipe.mkfifo(0o600)?;
 +        }
++        egysk_runtime::storage::open_android().unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("native storage setup: {error:#}"))
++        });
 +        restore_tmpcon()?;
 +        Ok(())
 +    };
@@ -321,7 +298,7 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
  
      let is_emulator = get_prop(cstr!("ro.kernel.qemu")) == "1"
          || get_prop(cstr!("ro.boot.qemu")) == "1"
-@@ -348,8 +373,6 @@
+@@ -348,8 +371,6 @@
      }
      info!("* Device API level: {sdk_int}");
  
@@ -333,17 +310,11 @@ diff --git a/native/src/core/daemon.rs b/native/src/core/daemon.rs
 diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 --- a/native/src/core/magisk.rs
 +++ b/native/src/core/magisk.rs
-@@ -1,4 +1,4 @@
--use crate::consts::{APPLET_NAMES, MAGISK_VER_CODE, MAGISK_VERSION, POST_FS_DATA_WAIT_TIME};
-+use crate::consts::{APPLET_NAMES, MAGISK_VER_CODE, MAGISK_VERSION};
- use crate::daemon::connect_daemon;
- use crate::ffi::{RequestCode, denylist_cli, get_magisk_tmp, install_module, unlock_blocks};
- use crate::mount::find_preinit_device;
-@@ -6,17 +6,15 @@
- use crate::socket::{Decodable, Encodable};
+@@ -7,16 +7,16 @@
  use argh::FromArgs;
  use base::{CmdArgs, EarlyExitExt, LoggedResult, Utf8CString, argh, clone_attr};
--use nix::poll::{PollFd, PollFlags, PollTimeout};
+ use nix::poll::{PollFd, PollFlags, PollTimeout};
++use std::os::fd::AsFd;
  use std::ffi::c_char;
 -use std::os::fd::AsFd;
  use std::process::exit;
@@ -361,11 +332,13 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  Options:
     -c                        print current binary version
-@@ -25,20 +23,21 @@
+@@ -25,20 +25,23 @@
     --list                    list all available applets
     --remove-modules [-n]     remove all modules, reboot if -n is not provided
     --install-module ZIP      install a module zip file
 +   --module ACTION ID [GEN]  enable, disable, remove, cancel-remove, rollback
++   --transition-product-state --offline ROOT
++                             preserve existing state in offline maintenance
  
  Advanced Options (Internal APIs):
 -   --daemon                  manually start magisk daemon
@@ -389,19 +362,20 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  Available applets:
       {}
-@@ -62,8 +61,11 @@
+@@ -62,8 +65,12 @@
      List(ListApplets),
      RemoveModules(RemoveModules),
      InstallModule(InstallModule),
 +    StageInstall(StageInstall),
 +    Module(ModuleCmd),
++    Transition(TransitionState),
      Daemon(StartDaemon),
      Stop(StopDaemon),
 +    EgyskStage(EgyskStage),
      PostFsData(PostFsData),
      Service(ServiceCmd),
      BootComplete(BootComplete),
-@@ -109,12 +111,39 @@
+@@ -109,12 +116,48 @@
  }
  
  #[derive(FromArgs)]
@@ -425,6 +399,15 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 +}
 +
 +#[derive(FromArgs)]
++#[argh(subcommand, name = "--transition-product-state")]
++struct TransitionState {
++    #[argh(switch)]
++    offline: bool,
++    #[argh(positional)]
++    backing_root: String,
++}
++
++#[derive(FromArgs)]
  #[argh(subcommand, name = "--daemon")]
  struct StartDaemon {}
  
@@ -441,7 +424,7 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  #[derive(FromArgs)]
  #[argh(subcommand, name = "--post-fs-data")]
-@@ -214,6 +243,36 @@
+@@ -214,12 +257,64 @@
              InstallModule(self::InstallModule { zip }) => {
                  install_module(&zip);
              }
@@ -475,44 +458,40 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 +                    return base::log_err!("Module {action} {id}: {error:#}");
 +                }
 +            }
++            Transition(TransitionState { offline, backing_root }) => {
++                if !offline {
++                    return base::log_err!("--offline asserts all product consumers are stopped");
++                }
++                match egysk_runtime::transition::offline_product_state(std::path::Path::new(&backing_root)) {
++                    Ok(outcome) => println!("{outcome:?}"),
++                    Err(error) => return base::log_err!("Offline product state transition: {error:#}"),
++                }
++            }
              Daemon(_) => {
                  let _ = connect_daemon(RequestCode::START_DAEMON, true)?;
              }
-@@ -221,19 +280,25 @@
+             Stop(_) => {
                  let mut fd = connect_daemon(RequestCode::STOP_DAEMON, false)?;
                  return Ok(i32::decode(&mut fd)?);
-             }
++            }
 +            EgyskStage(self::EgyskStage { stage }) => {
-+                if stage.parse::<egysk_runtime::Stage>().is_err() {
++                if !matches!(stage.as_str(), "init" | "early-fs" | "post-fs") {
 +                    return base::log_err!("Unknown Egysk stage: {stage}");
 +                }
-+                let mut fd = connect_daemon(RequestCode::EGYSK_STAGE, true)?;
-+                stage.encode(&mut fd)?;
-+                return Ok(i32::decode(&mut fd)?);
-+            }
++                let mut fd = connect_daemon(RequestCode::EGYSK_STAGE, true)
++                    .unwrap_or_else(|_| egysk_runtime::fatal_boot("cannot connect native early-stage daemon"));
++                stage.encode(&mut fd)
++                    .unwrap_or_else(|_| egysk_runtime::fatal_boot("cannot send native early callback"));
++                let status = i32::decode(&mut fd)
++                    .unwrap_or_else(|_| egysk_runtime::fatal_boot("native early callback disconnected"));
++                if status != 0 { egysk_runtime::fatal_boot("native early callback failed"); }
++                return Ok(0);
+             }
              PostFsData(_) => {
--                let fd = connect_daemon(RequestCode::POST_FS_DATA, true)?;
--                let mut pfd = [PollFd::new(fd.as_fd(), PollFlags::POLLIN)];
--                nix::poll::poll(
--                    &mut pfd,
--                    PollTimeout::try_from(POST_FS_DATA_WAIT_TIME * 1000)?,
--                )?;
-+                let mut fd = connect_daemon(RequestCode::POST_FS_DATA, true)?;
-+                return Ok(i32::decode(&mut fd)?);
-             }
-             Service(_) => {
--                let _ = connect_daemon(RequestCode::LATE_START, true)?;
-+                let mut fd = connect_daemon(RequestCode::LATE_START, true)?;
-+                return Ok(i32::decode(&mut fd)?);
-             }
-             BootComplete(_) => {
--                let _ = connect_daemon(RequestCode::BOOT_COMPLETE, false)?;
-+                let mut fd = connect_daemon(RequestCode::BOOT_COMPLETE, false)?;
-+                return Ok(i32::decode(&mut fd)?);
-             }
-             ZygoteRestart(_) => {
+                 let fd = connect_daemon(RequestCode::POST_FS_DATA, true)?;
+@@ -239,6 +334,9 @@
                  let _ = connect_daemon(RequestCode::ZYGOTE_RESTART, false)?;
-@@ -241,4 +306,7 @@
+             }
              UnlockBlocks(_) => {
 +                if crate::consts::EGYSK_PRODUCT {
 +                    return base::log_err!("Global block unlocking is excluded from Egysk");
@@ -520,7 +499,7 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
                  unlock_blocks();
              }
              RestoreCon(_) => {
-@@ -273,6 +341,11 @@
+@@ -273,6 +371,11 @@
                  return Ok(denylist_cli(&mut args));
              }
              PreInitDevice(_) => {
@@ -535,19 +514,24 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 --- a/native/src/core/module.rs
 +++ b/native/src/core/module.rs
-@@ -4,9 +4,8 @@
- use crate::mount::setup_module_mount;
+@@ -1,12 +1,10 @@
+-use crate::consts::{MODULEMNT, MODULEROOT, MODULEUPGRADE, WORKERDIR};
++use crate::consts::{MODULEMNT, MODULEROOT, WORKERDIR};
+ use crate::daemon::MagiskD;
+-use crate::ffi::{ModuleInfo, exec_module_scripts, exec_script, get_magisk_tmp};
+-use crate::mount::setup_module_mount;
++use crate::ffi::{ModuleInfo, get_magisk_tmp};
  use crate::resetprop::load_prop_file;
  use base::{
 -    DirEntry, Directory, FsPathBuilder, LoggedResult, OsResult, ResultExt, SilentLogExt, Utf8CStr,
 -    Utf8CStrBuf, Utf8CString, WalkResult, clone_attr, cstr, debug, error, info, libc, raw_cstr,
 -    warn,
-+    DirEntry, Directory, FsPathBuilder, LoggedResult, ResultExt, SilentLogExt, Utf8CStr,
++    DirEntry, Directory, FsPathBuilder, LoggedResult, ResultExt, Utf8CStr,
 +    Utf8CStrBuf, Utf8CString, WalkResult, clone_attr, cstr, debug, info, libc, log_err, raw_cstr,
  };
  use nix::fcntl::OFlag;
  use nix::mount::MsFlags;
-@@ -35,27 +34,24 @@
+@@ -35,27 +33,24 @@
      }
  }
  
@@ -587,7 +571,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
      Ok(())
  }
  
-@@ -144,12 +140,12 @@
+@@ -144,12 +139,12 @@
          self.real.path
      }
  
@@ -602,7 +586,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
      fn module_mnt(&self) -> &Utf8CStr {
          self.module_mnt.path
      }
-@@ -190,7 +186,7 @@
+@@ -190,7 +185,7 @@
          self.real.path
      }
  
@@ -611,7 +595,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
      fn worker(&self) -> &Utf8CStr {
          self.worker.path
      }
-@@ -288,35 +284,23 @@
+@@ -288,35 +283,23 @@
              FsNode::Directory { children } => {
                  let mut is_tmpfs = false;
  
@@ -655,7 +639,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
                  } else {
                      for (name, node) in children {
                          let path = path.append(name);
-@@ -325,10 +309,10 @@
+@@ -325,10 +308,10 @@
                  }
              }
              FsNode::File { src } => {
@@ -668,7 +652,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              }
          }
  
-@@ -368,8 +352,9 @@
+@@ -368,8 +351,9 @@
                  }
  
                  // Traverse the real directory and mount mirror files
@@ -680,7 +664,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
                          if children.contains_key(entry.name().as_str()) {
                              // Should not be mirrored, next
                              continue;
-@@ -385,7 +370,7 @@
+@@ -385,7 +369,7 @@
                              FsNode::new_dir().commit_tmpfs(path)?;
                          } else if entry.is_symlink() {
                              let mut link = cstr::buf::default();
@@ -689,7 +673,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
                              FsNode::Symlink {
                                  target: link.to_owned(),
                              }
-@@ -431,13 +416,11 @@
+@@ -431,13 +415,11 @@
          Ok(())
      }
  }
@@ -703,7 +687,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  fn inject_magisk_bins(system: &mut FsNode, is_emulator: bool) {
      fn inject(children: &mut FsNodeMap) {
          let mut path = cstr::buf::default().join_path(get_magisk_tmp());
-@@ -563,7 +546,6 @@
+@@ -563,7 +545,6 @@
          inject(children)
      }
  }
@@ -711,106 +695,214 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  fn inject_zygisk_bins(name: &str, system: &mut FsNode) {
      #[cfg(target_pointer_width = "64")]
      let has_32_bit = cstr!("/system/bin/linker").exists();
-@@ -619,7 +601,6 @@
+@@ -619,42 +600,6 @@
          }
      }
  }
 -
- fn upgrade_modules() -> LoggedResult<()> {
-     let mut upgrade = Directory::open(cstr!(MODULEUPGRADE)).silent()?;
-     let root = Directory::open(cstr!(MODULEROOT))?;
-@@ -654,7 +635,6 @@
-     cstr!(MODULEUPGRADE).remove()?;
-     Ok(())
- }
+-fn upgrade_modules() -> LoggedResult<()> {
+-    let mut upgrade = Directory::open(cstr!(MODULEUPGRADE)).silent()?;
+-    let root = Directory::open(cstr!(MODULEROOT))?;
+-    while let Some(e) = upgrade.read()? {
+-        if !e.is_dir() {
+-            continue;
+-        }
+-        let module_name = e.name();
+-        let mut disable = false;
+-        // Cleanup old module if exists
+-        if root.contains_path(module_name) {
+-            let module = root.open_as_dir_at(module_name)?;
+-            // If the old module is disabled, we need to also disable the new one
+-            disable = module.contains_path(cstr!("disable"));
+-            module.remove_all()?;
+-            root.unlink_at(module_name, UnlinkatFlags::RemoveDir)?;
+-        }
+-        info!("Upgrade / New module: {module_name}");
+-        e.rename_to(&root, module_name)?;
+-        if disable {
+-            let path = cstr::buf::default()
+-                .join_path(module_name)
+-                .join_path("disable");
+-            let _ = root.open_as_file_at(
+-                &path,
+-                OFlag::O_RDONLY | OFlag::O_CREAT | OFlag::O_CLOEXEC,
+-                0,
+-            )?;
+-        }
+-    }
+-    upgrade.remove_all()?;
+-    cstr!(MODULEUPGRADE).remove()?;
+-    Ok(())
+-}
 -
  fn for_each_module(mut func: impl FnMut(&DirEntry) -> LoggedResult<()>) -> LoggedResult<()> {
      let mut root = Directory::open(cstr!(MODULEROOT))?;
      while let Some(ref e) = root.read()? {
-@@ -664,7 +644,6 @@
+@@ -664,38 +609,13 @@
      }
      Ok(())
  }
 -
  pub fn disable_modules() {
-     for_each_module(|e| {
-         let dir = e.open_as_dir()?;
-@@ -677,7 +656,6 @@
-     })
-     .log_ok();
- }
+-    for_each_module(|e| {
+-        let dir = e.open_as_dir()?;
+-        dir.open_as_file_at(
+-            cstr!("disable"),
+-            OFlag::O_RDONLY | OFlag::O_CREAT | OFlag::O_CLOEXEC,
+-            0,
+-        )?;
++    for_each_module(|entry| {
++        egysk_runtime::set_enabled(entry.name().as_str(), false).unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("disable module: {error:#}"))
++        });
+         Ok(())
+-    })
+-    .log_ok();
+-}
 -
- fn run_uninstall_script(module_name: &Utf8CStr) {
-     let script = cstr::buf::default()
-         .join_path(MODULEROOT)
-@@ -685,7 +663,6 @@
-         .join_path("uninstall.sh");
-     exec_script(&script);
- }
+-fn run_uninstall_script(module_name: &Utf8CStr) {
+-    let script = cstr::buf::default()
+-        .join_path(MODULEROOT)
+-        .join_path(module_name)
+-        .join_path("uninstall.sh");
+-    exec_script(&script);
+-}
 -
- pub fn remove_modules() {
-     for_each_module(|e| {
-         let dir = e.open_as_dir()?;
-@@ -697,7 +674,6 @@
-     .log_ok();
-     cstr!(MODULEROOT).remove_all().log_ok();
+-pub fn remove_modules() {
+-    for_each_module(|e| {
+-        let dir = e.open_as_dir()?;
+-        if dir.contains_path(cstr!("uninstall.sh")) {
+-            run_uninstall_script(e.name());
+-        }
+-        Ok(())
+-    })
+-    .log_ok();
+-    cstr!(MODULEROOT).remove_all().log_ok();
++    }).unwrap_or_else(|_| egysk_runtime::fatal_boot("native safe-mode inventory failed"));
  }
--
- fn collect_modules(zygisk_enabled: bool, open_zygisk: bool) -> Vec<ModuleInfo> {
-     let mut modules = Vec::new();
  
-@@ -821,6 +797,9 @@
+ fn collect_modules(zygisk_enabled: bool, open_zygisk: bool) -> Vec<ModuleInfo> {
+@@ -705,18 +625,16 @@
+     for_each_module(|e| {
+         let name = e.name();
+         let dir = e.open_as_dir()?;
+-        if dir.contains_path(cstr!("remove")) {
+-            info!("{name}: remove");
+-            if dir.contains_path(cstr!("uninstall.sh")) {
+-                run_uninstall_script(name);
+-            }
+-            dir.remove_all()?;
+-            e.unlink()?;
++        let module_root = std::path::Path::new(MODULEROOT).join(name.as_str());
++        if egysk_runtime::store::valued_flag(&module_root, "remove")
++            .unwrap_or_else(|error| egysk_runtime::fatal_boot(&format!("module flags: {error:#}"))) {
++            egysk_runtime::request_remove(name.as_str()).unwrap_or_else(|error| {
++                egysk_runtime::fatal_boot(&format!("defer active module removal: {error:#}"))
++            });
+             return Ok(());
+         }
+-        dir.unlink_at(cstr!("update"), UnlinkatFlags::NoRemoveDir)
+-            .ok();
+-        if dir.contains_path(cstr!("disable")) {
++        if egysk_runtime::store::valued_flag(std::path::Path::new(MODULEROOT).join(name.as_str()).as_path(), "disable")
++            .unwrap_or_else(|error| egysk_runtime::fatal_boot(&format!("module flags: {error:#}"))) {
+             return Ok(());
+         }
+ 
+@@ -777,8 +695,7 @@
+             z64,
+         });
+         Ok(())
+-    })
+-    .log_ok();
++    }).unwrap_or_else(|_| egysk_runtime::fatal_boot("native module inventory failed"));
+ 
+     if zygisk_enabled && open_zygisk {
+         let mut use_memfd = true;
+@@ -816,26 +733,81 @@
+         });
+     }
+ 
++    let order = std::fs::read_to_string("/dev/esp/egysk/modules_order").unwrap_or_default();
++    let ids: Vec<_> = order.lines().map(str::trim).filter(|s| !s.is_empty() && !s.starts_with('#')).collect();
++    modules.sort_by(|a, b| {
++        let rank = |name: &str| ids.iter().position(|id| *id == name).unwrap_or(usize::MAX);
++        rank(&a.name).cmp(&rank(&b.name)).then_with(|| a.name.cmp(&b.name))
++    });
+     modules
+ }
  
  impl MagiskD {
++    pub fn run_early_modules(&self, stage: &str) {
++        crate::bootstages::product_events::hooks(stage, &collect_modules(false, false));
++    }
++
++    pub fn project_early_modules(&self) {
++        self.prepare_projection(false).and_then(|_| self.apply_modules(&collect_modules(false, false)))
++            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native early magic mount failed"));
++    }
++
      pub fn handle_modules(&self) {
-+        if crate::consts::EGYSK_PRODUCT {
-+            egysk_runtime::fatal_boot("Stock module upgrades cannot mutate the prepared ESP view");
-+        }
-         setup_module_mount();
-         upgrade_modules().ok();
- 
-@@ -830,12 +809,46 @@
- 
-         // Recollect modules (module scripts could remove itself)
+-        setup_module_mount();
+-        upgrade_modules().ok();
+-
++        // ESP/local generation activation already completed before any view was
++        // mounted. Renaming those active lowers here would corrupt the view.
+         let zygisk = self.zygisk_enabled.load(Ordering::Acquire);
+         let modules = collect_modules(zygisk, false);
+-        exec_module_scripts(cstr!("post-fs-data"), &modules);
+-
+-        // Recollect modules (module scripts could remove itself)
++        crate::bootstages::product_events::hooks("post-fs-data", &modules);
          let modules = collect_modules(zygisk, true);
 -        self.apply_modules(&modules);
-+        self.apply_modules(&modules).log_ok();
- 
+-
++        self.prepare_projection(true).and_then(|_| self.apply_modules(&modules))
++            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native magic mount failed"));
++        crate::bootstages::product_events::hooks("post-mount", &modules);
          self.module_list.set(modules).ok();
      }
  
 -    fn apply_modules(&self, module_list: &[ModuleInfo]) {
-+    pub fn project_modules(&self, ids: &[String]) -> LoggedResult<()> {
-+        let worker = cstr::buf::default()
-+            .join_path(get_magisk_tmp())
-+            .join_path(WORKERDIR);
-+        worker.mkdirs(0o700)?;
-+        nix::mount::mount(
-+            Some("egysk"),
-+            worker.as_str(),
-+            Some("tmpfs"),
-+            MsFlags::MS_NODEV,
-+            Some("mode=0700"),
-+        )?;
-+        worker.set_mount_private(true)?;
-+        // Recursive bind preserves the per-module OverlayFS/local bind mounts.
-+        let module_mnt = cstr::buf::default()
-+            .join_path(get_magisk_tmp())
-+            .join_path(MODULEMNT);
++    pub fn clear_early_modules(&self) -> LoggedResult<()> {
++        let mounts = base::parse_mount_info("self");
++            // Only this product's native Android exports. Never detach another
++            // root installation, the ESP, or any persistent module view.
++            let mut exports: Vec<_> = mounts.into_iter().filter(|mount| {
++                mount.source == "egysk" && ["/system", "/vendor", "/product", "/system_ext"]
++                    .iter().any(|root| std::path::Path::new(&mount.target).starts_with(root))
++            }).collect();
++            exports.sort_by_key(|mount| std::cmp::Reverse(mount.target.len()));
++            for mount in exports {
++                nix::mount::umount2(mount.target.as_str(), nix::mount::MntFlags::MNT_DETACH)?;
++            }
++        Ok(())
++    }
++
++    fn prepare_projection(&self, replace_early: bool) -> LoggedResult<()> {
++        let system = std::fs::canonicalize("/system").unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("Android system target unavailable: {error}"))
++        });
++        let mounts = base::parse_mount_info("self");
++        let backed = mounts.iter().filter(|mount| system.starts_with(&mount.target))
++            .max_by_key(|mount| mount.target.len()).is_some_and(|mount| {
++                !matches!(mount.fs_type.as_str(), "tmpfs" | "devtmpfs" | "rootfs")
++            });
++        if !system.is_dir() || (!replace_early && !backed) {
++            egysk_runtime::fatal_boot("native projection before Android filesystem");
++        }
++        if replace_early {
++            self.clear_early_modules()?;
++            crate::mount::clean_mounts();
++            let worker = cstr::buf::default().join_path(get_magisk_tmp()).join_path(WORKERDIR);
++            nix::mount::mount(Some("egysk"), worker.as_str(), Some("tmpfs"), MsFlags::MS_NODEV, Some("mode=0700"))?;
++        }
++        let module_mnt = cstr::buf::default().join_path(get_magisk_tmp()).join_path(MODULEMNT);
 +        module_mnt.mkdirs(0o700)?;
 +        cstr!(MODULEROOT).bind_mount_to(&module_mnt, true)?;
-+        let modules: Vec<ModuleInfo> = ids
-+            .iter()
-+            .map(|id| ModuleInfo {
-+                name: id.clone(),
-+                z32: -1,
-+                z64: -1,
-+            })
-+            .collect();
-+        self.apply_modules(&modules)?;
-+        if self.module_list.set(modules).is_err() {
-+            return log_err!("Modules already projected");
-+        }
++        // A recursive bind copies shared child mounts. Detaching that mirror
++        // must never propagate back into the persistent module views.
++        module_mnt.set_mount_private(true)?;
 +        Ok(())
 +    }
 +
@@ -818,15 +910,15 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
          let mut system = FsNode::new_dir();
  
          // Create buffers for paths
-@@ -860,18 +873,16 @@
+@@ -860,18 +832,16 @@
              }
              drop(prop);
  
 -            // Check whether skip mounting
 -            let skip = paths.append("skip_mount");
 -            if skip.module().exists() {
-+            // Use the same valued flag frozen by rdinit/runtime admission.
-+            if egysk_runtime::skip_mount(&info.name)? {
++            // ESP metadata flags use the same valued convention as ordinary marker files.
++            if egysk_runtime::store::valued_flag(std::path::Path::new(MODULEROOT).join(&info.name).as_path(), "skip_mount").unwrap_or_else(|error| egysk_runtime::fatal_boot(&format!("module flags: {error:#}"))) {
                  continue;
              }
 -            drop(skip);
@@ -840,7 +932,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              }
          }
  
-@@ -883,12 +894,14 @@
+@@ -883,12 +853,14 @@
          // We directly inject file nodes into the virtual filesystem tree we built in the previous
          // step, treating Magisk just like a special "module".
  
@@ -857,7 +949,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              let mut zygisk = self.zygisk.lock();
              zygisk.set_prop();
              inject_zygisk_bins(&zygisk.lib_name, &mut system);
-@@ -930,7 +943,8 @@
+@@ -930,7 +902,8 @@
              // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
  
              let paths = paths.append(dir);
@@ -905,24 +997,92 @@ diff --git a/native/src/core/mount.rs b/native/src/core/mount.rs
 diff --git a/native/src/core/scripting.cpp b/native/src/core/scripting.cpp
 --- a/native/src/core/scripting.cpp
 +++ b/native/src/core/scripting.cpp
-@@ -23,7 +23,7 @@
+@@ -21,9 +21,11 @@
+ }
+ 
  static void set_script_env() {
++    product_script_env();
      setenv("ASH_STANDALONE", "1", 1);
++    setenv("EGYSK", "true", 1);
      char new_path[4096];
 -    ssprintf(new_path, sizeof(new_path), "%s:%s", getenv("PATH"), get_magisk_tmp());
-+    ssprintf(new_path, sizeof(new_path), DATABIN ":%s", getenv("PATH") ?: "/system/bin");
++    ssprintf(new_path, sizeof(new_path), "/dev/egysk/rd/bin:" DATABIN ":%s", getenv("PATH") ?: "/system/bin");
      setenv("PATH", new_path, 1);
      if (MagiskD::Get().zygisk_enabled())
          setenv("ZYGISK_ENABLED", "1", 1);
-@@ -232,6 +232,7 @@
-     PFS_DONE()
+@@ -35,6 +37,9 @@
+     void (*pre_exec)() = nullptr;
+     int (*fork)() = xfork;
+     const char **argv = nullptr;
++    const char *module = nullptr;
++    const char *stage = nullptr;
++    const char *directory = nullptr;
+ };
+ 
+ static int exec_command(exec_t &exec) {
+@@ -74,6 +79,18 @@
+         close(outfd);
+     }
+ 
++    if (exec.module) {
++        setenv("MODDIR", exec.directory, 1);
++        setenv("EGYSK_MODULE", exec.module, 1);
++        string state = "/dev/egysk/state/"s + exec.module;
++        setenv("EGYSK_MODULE_STATE", state.c_str(), 1);
++        string stage(exec.stage);
++        auto dot = stage.find('.');
++        setenv("EGYSK_PHASE", dot == string::npos ? "" : stage.c_str() + dot + 1, 1);
++        if (dot != string::npos) stage.resize(dot);
++        setenv("EGYSK_STAGE", stage.c_str(), 1);
++    }
++
+     // Call the pre-exec callback
+     if (exec.pre_exec)
+         exec.pre_exec();
+@@ -98,7 +115,7 @@
+     if (pid < 0)
+         return -1;
+     int status;
+-    waitpid(pid, &status, 0);
++    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+     return WEXITSTATUS(status);
  }
  
-+
- constexpr char install_script[] = R"EOF(
- APK=%s
- log -t Magisk "pm_install: $APK"
-@@ -241,6 +242,10 @@
+@@ -205,6 +222,7 @@
+         return;
+ 
+     bool pfs = stage == "post-fs-data";
++    const bool blocking = !pfs && stage != "service";
+     if (pfs) {
+         timespec now{};
+         clock_gettime(CLOCK_MONOTONIC, &now);
+@@ -221,12 +239,22 @@
+         if (access(path, F_OK) == -1)
+             continue;
+         LOGI("%.*s: exec [%s.sh]\n", (int) m.name.size(), m.name.data(), stage.c_str());
++        string id(m.name.data(), m.name.size());
++        string directory = MODULEROOT "/" + id;
+         exec_t exec {
+             .pre_exec = set_script_env,
+-            .fork = pfs ? xfork : fork_dont_care
++            .fork = (pfs || blocking) ? xfork : fork_dont_care,
++            .module = id.c_str(),
++            .stage = stage.c_str(),
++            .directory = directory.c_str()
+         };
+-        exec_command(exec, BBEXEC_CMD, path);
+-        PFS_WAIT()
++        if (blocking) {
++            if (exec_command_sync(exec, BBEXEC_CMD, path) != 0)
++                product_fatal("early module hook failed; see native log");
++        } else {
++            exec_command(exec, BBEXEC_CMD, path);
++            PFS_WAIT()
++        }
+     }
+ 
+     PFS_DONE()
+@@ -241,6 +269,10 @@
  )EOF";
  
  void install_apk(Utf8CStr apk) {
@@ -933,7 +1093,7 @@ diff --git a/native/src/core/scripting.cpp b/native/src/core/scripting.cpp
      setfilecon(apk.c_str(), MAGISK_FILE_CON);
      char cmds[sizeof(install_script) + 4096];
      ssprintf(cmds, sizeof(cmds), install_script, apk.c_str(), JAVA_PACKAGE_NAME);
-@@ -283,7 +288,7 @@
+@@ -283,7 +315,7 @@
  }
  
  constexpr char install_module_script[] = R"EOF(
@@ -942,7 +1102,7 @@ diff --git a/native/src/core/scripting.cpp b/native/src/core/scripting.cpp
  install_module
  exit 0
  )EOF";
-@@ -294,20 +299,20 @@
+@@ -294,20 +326,20 @@
      if (access(DATABIN, F_OK) ||
          access(bbpath(), X_OK) ||
          access(DATABIN "/util_functions.sh", F_OK))
@@ -968,6 +1128,20 @@ diff --git a/native/src/core/scripting.cpp b/native/src/core/scripting.cpp
  
      const char *argv[] = { BBEXEC_CMD, "-c", install_module_script, nullptr };
      execve(argv[0], (char **) argv, environ);
+diff --git a/native/src/core/utils.cpp b/native/src/core/utils.cpp
+--- a/native/src/core/utils.cpp
++++ b/native/src/core/utils.cpp
+@@ -37,7 +37,9 @@
+ const char *get_magisk_tmp() {
+     static const char *path = nullptr;
+     if (path == nullptr) {
+-        if (access("/debug_ramdisk/" INTLROOT, F_OK) == 0) {
++        if (access("/dev/egysk/" INTLROOT, F_OK) == 0) {
++            path = "/dev/egysk";
++        } else if (access("/debug_ramdisk/" INTLROOT, F_OK) == 0) {
+             path = "/debug_ramdisk";
+         } else if (access("/sbin/" INTLROOT, F_OK) == 0) {
+             path = "/sbin";
 diff --git a/scripts/util_functions.sh b/scripts/util_functions.sh
 --- a/scripts/util_functions.sh
 +++ b/scripts/util_functions.sh

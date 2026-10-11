@@ -7,8 +7,8 @@ diff --git a/build.py b/build.py
  default_abis = support_abis.keys() - {"riscv64"}
 -support_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy", "resetprop"}
 -default_targets = support_targets - {"resetprop"}
-+support_targets = {"magisk", "magiskpolicy", "resetprop"}
-+default_targets = {"magisk", "magiskpolicy"}
++support_targets = {"magisk", "magiskinit", "magiskpolicy", "resetprop"}
++default_targets = {"magisk", "magiskinit", "magiskpolicy"}
  rust_targets = default_targets.copy()
  clean_targets = {"native", "cpp", "rust", "app"}
  
@@ -44,7 +44,7 @@ diff --git a/build.py b/build.py
 +
 +
 +def unsupported_product_action():
-+    error("Egysk builds native egyskd and policy tools, not APKs or boot installers")
++    error("Egysk builds native init, daemon and policy tools, not APKs or boot installers")
  
  
  def build_native():
@@ -191,28 +191,6 @@ diff --git a/native/src/core/logging.rs b/native/src/core/logging.rs
          chown(path.as_utf8_cstr(), Some(Uid::from(0)), Some(Gid::from(0)))?;
          let read = path.open(OFlag::O_RDWR | OFlag::O_CLOEXEC)?;
          let write = path.open(OFlag::O_WRONLY | OFlag::O_CLOEXEC)?;
-diff --git a/native/src/core/utils.cpp b/native/src/core/utils.cpp
---- a/native/src/core/utils.cpp
-+++ b/native/src/core/utils.cpp
-@@ -35,17 +35,7 @@
- }
- 
- const char *get_magisk_tmp() {
--    static const char *path = nullptr;
--    if (path == nullptr) {
--        if (access("/debug_ramdisk/" INTLROOT, F_OK) == 0) {
--            path = "/debug_ramdisk";
--        } else if (access("/sbin/" INTLROOT, F_OK) == 0) {
--            path = "/sbin";
--        } else {
--            path = "";
--        }
--    }
--    return path;
-+    return "/dev/egysk";
- }
- 
- void unlock_blocks() {
 diff --git a/native/src/core/zygisk/daemon.rs b/native/src/core/zygisk/daemon.rs
 --- a/native/src/core/zygisk/daemon.rs
 +++ b/native/src/core/zygisk/daemon.rs

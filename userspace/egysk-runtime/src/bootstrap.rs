@@ -4,43 +4,28 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub fn stage_tools(config: &BootstrapConfig, rdinit: bool) -> Result<()> {
+pub fn stage_tools(config: &BootstrapConfig) -> Result<()> {
     let mut tools = BTreeSet::from(BOOTSTRAP_TOOLS);
     tools.insert(config.backing.helper.as_str());
     tools.extend(config.tools.iter().map(String::as_str));
     for name in tools {
         identifier(name)?;
         let independent = Path::new(INDEPENDENT_BIN).join(name);
-        let source = if rdinit && name == LOADER {
-            PathBuf::from("/proc/self/exe")
-        } else if rdinit {
-            match fs::symlink_metadata(&independent) {
-                Ok(_) => independent,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Path::new(PACKAGE).join("bin").join(name)
-                }
-                Err(error) => {
-                    return Err(error).context("stat independently staged bootstrap tool");
-                }
+        let source = match fs::symlink_metadata(&independent) {
+            Ok(_) => independent,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Path::new(PACKAGE).join("bin").join(name)
             }
-        } else {
-            Path::new(PACKAGE).join("bin").join(name)
+            Err(error) => return Err(error).context("stat bootstrap tool"),
         };
-        if source != Path::new("/proc/self/exe") {
-            fsu::regular(&source)?;
-        }
+        fsu::regular(&source)?;
         let target = Path::new(BIN).join(name);
-        // Android reconstruction is executing the already copied egyskinit.
-        if !rdinit && name == LOADER {
-            continue;
-        }
         ensure!(!target.exists(), "bootstrap tool collision {name}");
         fs::copy(&source, &target).with_context(|| format!("stage tool {}", source.display()))?;
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
@@ -145,7 +130,7 @@ pub fn initialize_store() -> Result<()> {
     fsu::directory(Path::new(MODULES))?;
     fsu::directory(&Path::new(ROOT).join("state"))
 }
-fn label(path: &Path, context: &str) -> Result<()> {
+pub(crate) fn label(path: &Path, context: &str) -> Result<()> {
     let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
     let context = std::ffi::CString::new(context)?;
     let mut current = [0u8; 256];
@@ -188,7 +173,7 @@ fn label(path: &Path, context: &str) -> Result<()> {
     );
     Ok(())
 }
-fn label_tree(root: &Path, context: &str) -> Result<()> {
+pub(crate) fn label_tree(root: &Path, context: &str) -> Result<()> {
     label(root, context)?;
     if fs::symlink_metadata(root)?.is_dir() {
         for path in fsu::children(root)? {
@@ -275,116 +260,6 @@ pub fn label_module(module: &Module) -> Result<()> {
         FILE_CONTEXT,
     )?;
     Ok(())
-}
-pub fn persist_descriptor(descriptor: &Descriptor) -> Result<()> {
-    descriptor.validate()?;
-    fsu::atomic(Path::new(SOURCE), &serde_json::to_vec(descriptor)?)
-}
-/// Reconstruct only the descriptor's exact source and generations, never run
-/// discovery/activation a second time. Enter in init; create final views in egysk.
-pub fn reconstruct(hex: &str) -> Result<()> {
-    fsu::root_only()?;
-    let descriptor = Descriptor::decode(hex)?;
-    ensure!(
-        fsu::mounted(Path::new(ESP))? && fsu::mounted(Path::new(BIN))?,
-        "stock-tool ESP/bin bootstrap missing"
-    );
-    let device = fs::metadata(ESP)?.dev();
-    let major =
-        u32::try_from(i64::from(libc::major(device))).context("invalid reconstructed ESP major")?;
-    let minor =
-        u32::try_from(i64::from(libc::minor(device))).context("invalid reconstructed ESP minor")?;
-    ensure!(
-        major == descriptor.esp_major && minor == descriptor.esp_minor,
-        "reconstructed ESP identity mismatch"
-    );
-    stage_tools(&descriptor.config, false)?;
-    // Base helper declarations allow these labels and init-context execution;
-    // the complete native policy is loaded only after its executable is usable.
-    // This boot-local parent is shared with system-UID module consumers; do not
-    // let the launching init's umask make their explicitly labelled files
-    // unreachable. Contents retain their own narrower permissions.
-    fs::set_permissions(ROOT, fs::Permissions::from_mode(0o755))?;
-    label(Path::new(ROOT), FILE_CONTEXT)?;
-    label_tree(Path::new(BIN), FILE_CONTEXT)?;
-    let mut selected = descriptor.config.clone();
-    if selected.backing.kind == "block" {
-        let node = SELECTED_BACKING.to_owned();
-        let path = std::ffi::CString::new(node.as_str())?;
-        ensure!(
-            unsafe {
-                libc::mknod(
-                    path.as_ptr(),
-                    libc::S_IFBLK | 0o600,
-                    descriptor.backing_device,
-                )
-            } == 0,
-            "create selected physical backing node: {}",
-            std::io::Error::last_os_error()
-        );
-        selected.backing.source = Some(node);
-        selected.backing.partition = None;
-    }
-    prepare_backing(&selected)?;
-    ensure!(
-        fs::metadata(STORE)?.dev() == descriptor.backing_device,
-        "reconstructed metadata identity mismatch"
-    );
-    initialize_store()?;
-    // The kernel's sysfs export omits Android policy configuration bits. Export
-    // the coherent live policy through the helper rather than replacing foreign
-    // rules or deriving configuration from an original on-disk policy.
-    let snapshot = Path::new(ROOT).join("bootstrap.policy");
-    fsu::atomic(&snapshot, &crate::helper::live_policy()?)?;
-    let output = Command::new(Path::new(BIN).join(POLICY_TOOL))
-        .arg("--load")
-        .arg(&snapshot)
-        .args(["--live", "--magisk"])
-        .output();
-    let cleanup = fs::remove_file(&snapshot);
-    let output = output.context("execute native base product policy")?;
-    cleanup.context("remove bootstrap policy snapshot")?;
-    ensure!(
-        output.status.success(),
-        "native base product policy failed: {}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Persisted uppers carry Android export labels from the previous boot.
-    // Relabel them in the product domain, not by expanding stock init's access.
-    // OverlayFS also retains this domain's credentials for lower/upper work.
-    // This is an existing procfs attribute, not a file to create or truncate.
-    fs::OpenOptions::new()
-        .write(true)
-        .open("/proc/self/attr/current")
-        .context("open current SELinux task attribute")?
-        .write_all(DOMAIN.as_bytes())
-        .context("enter product context before reconstructing module storage")?;
-    // Only the dedicated framework subtree is labelled, never metadata's keys
-    // or password_slots siblings. Do this before attaching any overlay.
-    label_tree(Path::new(STORE), FILE_CONTEXT)?;
-    label(Path::new(MODULES), FILE_CONTEXT)?;
-    crate::store::mount_view(&descriptor.modules, crate::store::ViewStage::Android)
-        .context("reconstruct module views")?;
-    fsu::mount(
-        MOUNT_SOURCE,
-        Path::new(RD),
-        EXECUTABLE_MOUNT.fs_type,
-        EXECUTABLE_MOUNT.flags,
-        EXECUTABLE_MOUNT.data,
-    )
-    .context("reconstruct staged module filesystem")?;
-    for module in &descriptor.modules {
-        stage_module_files(module).with_context(|| format!("stage module {} files", module.id))?;
-    }
-    label_tree(Path::new(RD), FILE_CONTEXT)?;
-    label_tree(Path::new(BIN), FILE_CONTEXT)?;
-    restore_efivarfs().context("restore efivarfs")?;
-    persist_descriptor(&descriptor).context("persist reconstructed descriptor")?;
-    label(Path::new(SOURCE), FILE_CONTEXT)?;
-    fsu::atomic(&Path::new(ROOT).join("reconstructed"), b"1")?;
-    label(&Path::new(ROOT).join("reconstructed"), FILE_CONTEXT)?;
-    crate::property("egysk.bootstrap.ready", "1")
 }
 pub fn restore_efivarfs() -> Result<()> {
     // Only a loaded filesystem is restored; EFI is an independent critical LKM

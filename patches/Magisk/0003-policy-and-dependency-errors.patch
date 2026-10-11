@@ -519,7 +519,7 @@ diff --git a/native/src/sepolicy/rules.rs b/native/src/sepolicy/rules.rs
      };
      (@args [proc]) => {
          vec![SEPOL_PROC_DOMAIN]
-@@ -53,90 +46,103 @@
+@@ -53,90 +46,98 @@
          set_log_level_state(LogLevel::Warn, false);
          rules! {
              use self;
@@ -690,11 +690,6 @@ diff --git a/native/src/sepolicy/rules.rs b/native/src/sepolicy/rules.rs
 +            allow([proc], ["kernel"], ["security"], ["load_policy", "read_policy", "compute_av", "check_context"]);
 +            allow([proc], ["property_socket"], ["sock_file"], ["write"]);
 +            allow([proc], ["init"], ["unix_stream_socket"], ["connectto"]);
-+            // Runtime-owned RC gates are egysk.module.*.ready / egysk.stage.*.
-+            allow([proc], ["default_prop"], ["property_service"], ["set"]);
-+            // Blocking stage dispatch starts/stops only admitted egysk-* services;
-+            // property-triggered RC actions alone can trail Android consumers.
-+            allow([proc], ["ctl_start_prop", "ctl_stop_prop"], ["property_service"], ["set"]);
 +            // resetprop is the staged direct-property tool used by platform modules.
 +            allow([proc], ["property_type"], ["file"], ["open", "read", "write", "map", "getattr"]);
 +            // resetprop updates the shared serial area as well as property values.
