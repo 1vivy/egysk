@@ -119,9 +119,6 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
             }
         }
     }
-    if storage.debug {
-        policy.push_str(crate::adb::POLICY);
-    }
     fsu::atomic(
         Path::new("/egysk-overlay.d/egysk-modules.rc"),
         rc.as_bytes(),

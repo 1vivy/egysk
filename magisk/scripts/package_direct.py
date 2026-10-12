@@ -12,8 +12,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOLS = ("egyskd", "magiskpolicy", "init-ld", "util_functions.sh",
-         "egysk-adbd", "libegysk-adb.so", "egysk-adb.sh")
+TOOLS = ("egyskd", "magiskpolicy", "init-ld", "util_functions.sh")
 
 
 def copy(source: Path, target: Path, mode: int = 0o755) -> None:
@@ -48,7 +47,9 @@ def package(args: argparse.Namespace) -> None:
             copy(ROOT / "modules/lkm-loader" / name, module / name,
                  0o755 if name.endswith(".sh") else 0o644)
         copy(args.loader, module / "bin/lkm-loader")
-        (package_root / "modules_order").write_text("lkm-loader\n")
+        shutil.copytree(args.native_bin.parent / "modules/adb-root",
+                        package_root / "modules/adb-root")
+        (package_root / "modules_order").write_text("lkm-loader\nadb-root\n")
         bootstrap = work / "bootstrap"
         bootstrap.mkdir()
         (bootstrap / "egysk.toml").write_text(config)

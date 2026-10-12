@@ -9,10 +9,13 @@ Report the exact product commit, Magisk pin/patchset, kernel KMI and configurati
 
 There is no product kernel helper or alternate root-provider ABI. Native
 upstream SU machinery retains authorization outside the explicit lab debug mode.
-`androidboot.egysk.debug=1` intentionally grants shell SU and starts
-unauthenticated root adbd in the permissive `egysk` domain. Anyone with access to
-the adb transport has full root access on that boot. Never use this mode on a
-production or untrusted transport; flag-off boots must retain stock adb behavior.
+`androidboot.egysk.debug=1` intentionally grants shell SU; it does not control
+adb. The direct package enables the ordinary `adb-root` module on every boot.
+That module makes `adbd` permissive, provides unauthenticated root adb in the
+permissive `egysk` domain, and persists USB debugging enablement. Anyone with
+access to that transport has full root access, including debug-flag-off boots.
+Never use the module on a production or untrusted transport. Disabling it does
+not undo the persisted USB preference; restore that preference explicitly.
 An installed root's files, socket, ordinary SU entrypoint and
 lifecycle are not ours to appropriate.
 

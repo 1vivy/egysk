@@ -1,4 +1,4 @@
-// Debug-boot wrapper, bind-mounted into the stock adbd APEX by egysk-adb.sh.
+// adb-root module wrapper, executed from the stock adbd APEX.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     }
     args[count++] = "--root_seclabel=u:r:egysk:s0";
     args[count] = NULL;
-    if (setenv("LD_PRELOAD", "/apex/com.android.adbd/bin/libegysk-adb.so", 1) == 0)
+    if (setenv("LD_PRELOAD", "/apex/com.android.adbd/bin/libadb-root.so", 1) == 0)
         execv("/apex/com.android.adbd/bin/adbd.real", args);
     perror("egysk: execute real adbd");
     return 127;

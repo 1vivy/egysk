@@ -22,15 +22,12 @@ pub const DAEMON: &str = "egyskd";
 pub const POLICY_TOOL: &str = "magiskpolicy";
 pub const INIT_PRELOAD: &str = "init-ld";
 pub const FILE_CONTEXT: &str = "u:object_r:egysk_file:s0";
-pub const BOOTSTRAP_TOOLS: [&str; 8] = [
+pub const BOOTSTRAP_TOOLS: [&str; 5] = [
     DAEMON,
     "busybox",
     POLICY_TOOL,
     "util_functions.sh",
     INIT_PRELOAD,
-    "egysk-adb.sh",
-    "egysk-adbd",
-    "libegysk-adb.so",
 ];
 
 // Persisted storage-format markers, not executable/product aliases. Keeping

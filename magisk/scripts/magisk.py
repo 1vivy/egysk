@@ -229,15 +229,20 @@ def build(args: argparse.Namespace) -> None:
     for source, name in (("egyskd", "egyskd"), ("magiskinit", "egyskinit"), ("magiskpolicy", "magiskpolicy")):
         shutil.copy2(args.output / "native/out" / args.abi / source, destination / name)
     shutil.copy2(args.output / "native/out" / args.abi / "libinit-ld.so", destination / "init-ld")
-    # Own adb wrapper/preload, using the same explicit NDK r29 as PID1.
+    # The optional adb-root module owns its binaries, policy and lifecycle.
+    module_source = ROOT / "modules/adb-root"
+    module = destination.parent / "modules/adb-root"
+    shutil.copytree(module_source, module, ignore=shutil.ignore_patterns("native"),
+                    dirs_exist_ok=True)
+    module_bin = module / "system/apex/com.android.adbd/bin"
+    module_bin.mkdir(parents=True, exist_ok=True)
     llvm = static_ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     compiler_triple = "armv7a-linux-androideabi" if args.abi == "armeabi-v7a" else triples[args.abi]
     cc = llvm / f"{compiler_triple}35-clang"
     flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-Wl,-z,max-page-size=16384"]
-    run(cc, *flags, "-static", PRODUCT / "adbd.c", "-o", destination / "egysk-adbd")
-    run(cc, *flags, "-shared", "-fPIC", PRODUCT / "adb_preload.c", "-ldl",
-        "-o", destination / "libegysk-adb.so")
-    shutil.copy2(PRODUCT / "egysk-adb.sh", destination / "egysk-adb.sh")
+    run(cc, *flags, "-static", module_source / "native/adbd.c", "-o", module_bin / "adbd")
+    run(cc, *flags, "-shared", "-fPIC", module_source / "native/preload.c", "-ldl",
+        "-o", module_bin / "libadb-root.so")
     flags = (args.output / "native/out/generated/flags.h").read_text()
     version = re.search(r'^#define MAGISK_VERSION\s+"([^"]+)"$', flags, re.MULTILINE)
     code = re.search(r"^#define MAGISK_VER_CODE\s+(\d+)$", flags, re.MULTILINE)

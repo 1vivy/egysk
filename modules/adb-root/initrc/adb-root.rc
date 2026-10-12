@@ -1,0 +1,5 @@
+on property:apexd.status=ready && property:egysk.adb_root.ready=1
+    exec u:r:egysk:s0 0 0 -- /dev/egysk/bin/busybox sh /dev/egysk/modules/adb-root/setup.sh
+
+on property:ro.persistent_properties.ready=true && property:egysk.adb_root.ready=1
+    exec u:r:egysk:s0 0 0 -- /dev/egysk/bin/busybox sh /dev/egysk/modules/adb-root/setup.sh
