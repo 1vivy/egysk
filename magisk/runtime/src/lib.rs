@@ -1,5 +1,6 @@
 //! Storage adapters linked into patched Magiskinit and Magisk's native daemon.
 //! Lifecycle, inventory, init RC, policy and projection belong to Magisk.
+pub mod bootlog;
 pub mod bootstrap;
 pub mod context;
 mod esp;
@@ -34,7 +35,15 @@ pub fn fatal_boot(message: &str) -> ! {
             IoSlice::new(b"\n"),
         ]);
     }
-    if Path::new(STORE).is_dir() {
+    let _ = bootlog::write(
+        &[
+            b"egysk fatal boot: ",
+            message.as_bytes().get(..4096).unwrap_or(message.as_bytes()),
+            b"\n",
+        ],
+        true,
+    );
+    if bootlog::store_mounted() {
         let _ = fsutil::atomic(
             &Path::new(STORE).join("last-failure"),
             message.as_bytes().get(..4096).unwrap_or(message.as_bytes()),
@@ -60,22 +69,38 @@ pub fn fatal_boot(message: &str) -> ! {
     }
 }
 
+/// Bootconfig overrides cmdline per key, including explicitly disabled flags.
+fn boot_value<'a>(bootconfig: &'a str, cmdline: &'a str, key: &str) -> Option<&'a str> {
+    bootconfig
+        .lines()
+        .find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key).then(|| v.trim().trim_matches('"'))
+        })
+        .or_else(|| {
+            cmdline.split_whitespace().find_map(|word| {
+                let (k, v) = word.split_once('=')?;
+                (k == key).then_some(v)
+            })
+        })
+}
+
+pub fn debug_boot(bootconfig: &str, cmdline: &str) -> bool {
+    boot_value(bootconfig, cmdline, "androidboot.egysk.debug") == Some("1")
+}
+
+/// Native policies schema: Allow = 2. Reconcile this row on every daemon start.
+pub fn shell_policy_sql(debug: bool) -> &'static str {
+    if debug {
+        "INSERT OR REPLACE INTO policies (uid,policy,until,logging,notification) VALUES (2000,2,0,1,1)"
+    } else {
+        "DELETE FROM policies WHERE uid=2000"
+    }
+}
+
 /// First-stage classifier ported from egyskinit; bootconfig overrides cmdline per key.
 pub fn boot_mode(bootconfig: &str, cmdline: &str, recovery_present: bool) -> BootMode {
-    let value = |key: &str| {
-        bootconfig
-            .lines()
-            .find_map(|line| {
-                let (k, v) = line.split_once('=')?;
-                (k.trim() == key).then(|| v.trim().trim_matches('"'))
-            })
-            .or_else(|| {
-                cmdline.split_whitespace().find_map(|word| {
-                    let (k, v) = word.split_once('=')?;
-                    (k == key).then_some(v)
-                })
-            })
-    };
+    let value = |key| boot_value(bootconfig, cmdline, key);
     if matches!(
         value("androidboot.mode"),
         Some("recovery" | "fastboot" | "fastbootd")

@@ -14,6 +14,18 @@ pub fn is_recovery() -> bool {
     STORAGE.mode == egysk_runtime::context::BootMode::Recovery
 }
 
+pub fn debug_boot() -> bool {
+    STORAGE.debug
+}
+
+/// Reconcile before opening the daemon socket: a prior dev boot cannot leak its grant.
+pub fn configure_shell_policy(daemon: &crate::daemon::MagiskD) {
+    const _: () = assert!(crate::ffi::SuPolicy::Allow.repr == 2);
+    if daemon.db_exec(egysk_runtime::shell_policy_sql(debug_boot()), &[]) != 0 {
+        egysk_runtime::fatal_boot("cannot reconcile boot-scoped shell su policy");
+    }
+}
+
 pub fn hooks(stage: &str, modules: &Vec<ModuleInfo>) {
     let storage = &*STORAGE;
     exec_module_scripts(&Utf8CString::from(stage), modules);

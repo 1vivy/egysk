@@ -21,6 +21,56 @@ rdinit = ["identity", "storage", "provide", "avb", "projection"]
 }
 
 #[test]
+fn debug_boot_requires_exact_one_and_bootconfig_takes_precedence() {
+    use egysk_runtime::debug_boot;
+    assert!(!debug_boot("", ""));
+    assert!(debug_boot("", "androidboot.egysk.debug=1"));
+    assert!(debug_boot("androidboot.egysk.debug = \"1\"", ""));
+    for value in ["", "0", "true", "01", "2", "1x"] {
+        let cmdline = format!("androidboot.egysk.debug={value}");
+        let bootconfig = format!("androidboot.egysk.debug = \"{value}\"");
+        assert!(!debug_boot("", &cmdline));
+        assert!(!debug_boot(&bootconfig, "androidboot.egysk.debug=1"));
+    }
+    assert!(debug_boot(
+        "androidboot.egysk.debug = \"1\"",
+        "androidboot.egysk.debug=0"
+    ));
+}
+
+#[test]
+fn product_boot_removes_prior_shell_grant_without_changing_other_policies() {
+    // Python is already required by the native producer. Exercise real SQLite
+    // with the same SQL passed to Magisk's own db layer, not a SQL wording test.
+    let result = std::process::Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import sqlite3, sys
+db = sqlite3.connect(":memory:")
+db.execute("CREATE TABLE policies (uid INT PRIMARY KEY, policy INT, until INT, logging INT, notification INT)")
+db.execute("INSERT INTO policies VALUES (12345,1,0,0,0)")
+for _ in range(2):
+    db.execute(sys.argv[1])
+    assert db.execute("SELECT policy,until FROM policies WHERE uid=2000").fetchall() == [(2,0)]
+for _ in range(2):
+    db.execute(sys.argv[2])
+    assert db.execute("SELECT * FROM policies WHERE uid=2000").fetchall() == []
+assert db.execute("SELECT * FROM policies").fetchall() == [(12345,1,0,0,0)]
+"#,
+            egysk_runtime::shell_policy_sql(true),
+            egysk_runtime::shell_policy_sql(false),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn producer_only_kernel_selection_is_not_a_runtime_contract() {
     let text = r#"
         kmi = "producer-only"

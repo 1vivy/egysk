@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct Storage {
     pub config: BootstrapConfig,
     pub mode: BootMode,
+    pub debug: bool,
     esp: u64,
     backing: u64,
 }
@@ -36,6 +37,7 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
             .lines()
             .any(|line| line.trim() == "egysk.safe_mode = \"1\"");
     let mode = crate::boot_mode(&bootconfig, &cmdline, Path::new("/sbin/recovery").exists());
+    let debug = crate::debug_boot(&bootconfig, &cmdline);
     fsu::directory(Path::new(BIN))?;
     bootstrap::stage_tools(&config)?;
     bootstrap::prepare_backing(&config)?;
@@ -54,6 +56,7 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
         Storage {
             config,
             mode,
+            debug,
             esp,
             backing: fs::metadata(STORE)?.dev(),
         },

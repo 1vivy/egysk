@@ -39,9 +39,9 @@ ESP/Unix storage adapter; it is not a process or stage manager.
 The core origin is `https://github.com/1vivy/egysk.git`; private sibling origins
 are `1vivy/maos` and `1vivy/maos-lkms`. Product paths, sockets, services
 and SELinux identities are distinct from ordinary user root installations.
-Egysk does not claim their `su` entrypoint, forward SU requests, negotiate root
-providers or ship a Manager. Retained upstream authorization is not stripped
-merely because app SU is not the product's purpose.
+Egysk does not forward SU requests, negotiate root providers or ship a Manager.
+Retained upstream authorization is not stripped merely because app SU is not the
+product's purpose. Only an explicit lab debug boot projects egysk's `su` on PATH.
 
 SELinux uses Magisk's built-in foundation under `egysk`, `egysk_file` and
 `egysk_log_file`, including its broad daemon permissions, ioctl access and
@@ -50,8 +50,8 @@ bootstrap policy pass. The small integration delta covers early tmpfs/backing
 labels, private efivarfs association, nosuid RC transitions and fatal init handling.
 Other root installations retain their policy loaders and `/data/adb` access.
 Module `sepolicy.rule` files still own service-specific policy; this does not make
-the boot HAL or Gatekeeper domains permissive. SU authorization is unchanged;
-there is no ESP ACL implementation.
+the boot HAL or Gatekeeper domains permissive. SU uses the upstream policy table
+with the boot-scoped lab grant below; there is no ESP ACL implementation.
 
 ## Boot lifecycle
 
@@ -109,6 +109,41 @@ Fatal product failures must remain real panics with a logged cause, not quiet
 reboots. Diagnostic Android boots also use
 `androidboot.init_fatal_panic=true` for init's own fatal failures. Permissive boot
 and AVC review are distinct from enforcing qualification.
+
+The daemon opens `/dev/egysk/store/egysk.log` as soon as its backing is mounted,
+before accepting stage callbacks. Records are written through as they arrive;
+Warn/Error records and fatal causes are fsynced. The previous log is rotated to
+`egysk.log.bak` once at daemon startup and again whenever the live file would
+exceed 512 KiB. Only that single backup is retained (at most 1 MiB total).
+Before the store is mounted, only kmsg is available; fatal paths always retain
+their direct kmsg write. Logs are not stored on the ESP or logfs.
+
+Blocking native module hooks retain a 512-byte stderr tail and report the module,
+stage and exit status in fatal messages (signal termination uses `128 + signal`).
+Native hook stderr also streams into prefixed log records, including non-blocking
+service and post-fs-data hooks; long/partial lines are split into bounded records.
+
+## Lab-only shell root
+
+Set `androidboot.egysk.debug=1` in the bootconfig or kernel command line to grant
+UID 2000 (Android's `shell`) upstream MagiskSU `Allow` policy and project egysk's
+`su` onto the shell PATH through Magisk's native binary injection. Only the exact
+value `1` enables it; bootconfig overrides cmdline. The daemon reconciles the
+policy before accepting requests: a boot with the flag absent or any other value
+deletes UID 2000's row from the shared physical-store database and does not inject
+`su`. This is a boot input, never a persisted product setting.
+
+On a dev boot, `adb shell su -c id` should report UID 0. `adbd`, its authentication,
+APEX and Android properties are unchanged; this does **not** enable `adb root`.
+All processes running as UID 2000 gain this access, and the root shell uses the
+permissive `egysk` domain: **lab use only**, not a production security mode.
+Existing Magisk foundation rules already let `shell` execute `egysk_file` and
+connect to the daemon's Unix socket; no extra SELinux rule is needed.
+
+For device qualification, compare flag-off/on boots: off has no egysk-injected
+`su` and no UID-2000 policy row; on permits the command above. A forced failing
+early hook must include its stderr tail and status in kmsg and `egysk.log`.
+Other installed root providers can independently expose their own `su`.
 
 ## ESP and Unix backing
 
