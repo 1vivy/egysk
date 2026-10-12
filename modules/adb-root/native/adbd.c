@@ -1,4 +1,6 @@
 // adb-root module wrapper, executed from the stock adbd APEX.
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +20,19 @@ int main(int argc, char **argv) {
     }
     args[count++] = "--root_seclabel=u:r:egysk:s0";
     args[count] = NULL;
-    if (setenv("LD_PRELOAD", "/apex/com.android.adbd/bin/libadb-root.so", 1) == 0)
+    const char *operation = "set LD_PRELOAD";
+    if (setenv("LD_PRELOAD", "/apex/com.android.adbd/bin/libadb-root.so", 1) == 0) {
+        operation = "exec /apex/com.android.adbd/bin/adbd.real";
         execv("/apex/com.android.adbd/bin/adbd.real", args);
-    perror("egysk: execute real adbd");
+    }
+    int error = errno;
+    int kmsg = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    if (kmsg >= 0) {
+        dprintf(kmsg, "adb-root: wrapper %s failed: %s (errno=%d)\n",
+                operation, strerror(error), error);
+        close(kmsg);
+    }
+    errno = error;
+    perror(operation);
     return 127;
 }

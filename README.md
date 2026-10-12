@@ -169,6 +169,8 @@ The module uses existing mechanisms, with no core adb special case:
   becomes available. Missing APEX returns only from that invocation, never
   disables the later hooks. The bind captures the current boot's stock adbd,
   applies its attributes and restarts adbd once per newly installed bind.
+  Wrapper exec failures log the attempted operation and errno directly to kmsg
+  before returning 127, distinguishing an exec denial from USB configuration.
 - Once `ro.persistent_properties.ready=true`, setup adds `adb` to
   `persist.sys.usb.config`, preserving other USB functions. A module RC action
   handles that readiness event so `load_persist_props` cannot overwrite the
