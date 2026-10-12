@@ -48,9 +48,6 @@ def package(args: argparse.Namespace) -> None:
             copy(ROOT / "modules/lkm-loader" / name, module / name,
                  0o755 if name.endswith(".sh") else 0o644)
         copy(args.loader, module / "bin/lkm-loader")
-        (module / "kmod").mkdir()
-        # Stock vendor dependencies only: no maos, LVM or projection LKMs.
-        (module / "kmod/modules.load").write_text("")
         (package_root / "modules_order").write_text("lkm-loader\n")
         bootstrap = work / "bootstrap"
         bootstrap.mkdir()

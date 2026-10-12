@@ -3,4 +3,6 @@ set -eu
 MODDIR=${0%/*}
 export MODDIR
 "$MODDIR/bin/lkm-loader" --vendor
-"$MODDIR/bin/lkm-loader" --dir "$MODDIR/kmod"
+if [ -e "$MODDIR/kmod/modules.load" ]; then
+    "$MODDIR/bin/lkm-loader" --dir "$MODDIR/kmod"
+fi

@@ -248,14 +248,16 @@ out/direct-esp/
   egysk/egysk.toml
   egysk/bin/{egyskd,magiskpolicy,init-ld,util_functions.sh,busybox,
              egysk-adbd,libegysk-adb.so,egysk-adb.sh}
-  egysk/modules/lkm-loader/{module.prop,pid1.sh,bin/lkm-loader,kmod/modules.load}
+  egysk/modules/lkm-loader/{module.prop,pid1.sh,bin/lkm-loader}
   egysk/modules_order
   direct/egysk.cpio                legacy-LZ4 (despite the .cpio suffix)
 ```
 
-The empty payload `modules.load` adds no product LKMs; `pid1.sh` loads only the
-stock vendor dependencies. The common tree and archive come from exactly the
-same native inputs/config. No `rom/`, BLS entry or maos executable is generated.
+Direct mode has no `kmod/` directory; `pid1.sh` loads only the stock vendor
+dependencies. When a package supplies `kmod/modules.load`, PID1 also runs the
+payload loader, which continues to reject an empty list. The common tree and
+archive come from exactly the same native inputs/config. No `rom/`, BLS entry
+or maos executable is generated.
 Copy this tree only to a dedicated/direct ESP package: managed and direct backing
 descriptors cannot share one active `egysk/egysk.toml`.
 
@@ -301,9 +303,10 @@ No `*.compat.json` or `*.build.json` member is admitted: producer build metadata
 stays with its producer and never enters the archive. It never supplies stock
 `/init`, a second Magiskinit or the retired kernel helper. The owned PID 1
 loader module lives in `modules/lkm-loader`: `pid1.sh` loads the stock vendor
-modules, then the ordered `kmod/modules.load` payload list the platform packager
-writes from the seed's critical modules. A branch-only KMI must resolve to
-exactly one generation for the architecture.
+modules, then the ordered `kmod/modules.load` payload list when present. Platform
+packagers supply that optional list from their seed's critical modules; a
+present list must not be empty. A branch-only KMI must resolve to exactly one
+generation for the architecture.
 
 `egysk-build.json` inventories architecture, exact KMI, entry and member
 hashes/sizes/modes. It excludes itself and has no package build ID. The platform
