@@ -1,6 +1,6 @@
 # Egysk
 
-**Status (2026-10-11)** — Egysk is patched Magisk for early, ESP-backed modules
+**Status (2026-10-12)** — Egysk is patched Magisk for early, ESP-backed modules
 on multi-OS Android. The native-lifecycle rework replaces the separate Rust PID1
 manager and kernel helper. Both native architectures build and archives pass
 admission. Payload `1b47402f1ff6` boots the phone permissively with native early
@@ -232,7 +232,7 @@ removed helper/runtime implementation, not the replacement.
 
 Platform obligations are unchanged: peer installation identity and GSI/DSU
 credential ownership; no automatic namespace adoption or recycling; stock
-Gatekeeper scheduling; independent Partformer ABI5 and LVM ownership; native
+Gatekeeper scheduling; independent Partformer ABI6 and LVM ownership; native
 EFI semantics and exact partition identity. See `egysk-modules` for those
 contracts. The planning assumption remains 16 Weaver slots for five Android
 installations, roughly three each—not measured capacity or a quota. Organic
