@@ -1,3 +1,0 @@
-permissive { egysk }
-permissive { adbd }
-allow init adbd process2 nosuid_transition

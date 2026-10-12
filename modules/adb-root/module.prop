@@ -1,6 +1,0 @@
-id=adb-root
-name=Insecure root adb
-version=1
-versionCode=1
-author=Egysk
-description=Root adbd and unauthenticated USB debugging through the stock adbd APEX

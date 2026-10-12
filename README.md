@@ -133,7 +133,7 @@ stage and exit status in fatal messages (signal termination uses `128 + signal`)
 Native hook stderr also streams into prefixed log records, including non-blocking
 service and post-fs-data hooks; long/partial lines are split into bounded records.
 
-## Lab-only shell and adb root
+## Lab-only shell SU
 
 Set `androidboot.egysk.debug=1` in the bootconfig or kernel command line to grant
 UID 2000 (Android's `shell`) upstream MagiskSU `Allow` policy and project egysk's
@@ -143,52 +143,10 @@ policy before accepting requests: a boot with the flag absent or any other value
 deletes UID 2000's row from the shared physical-store database and does not inject
 `su`. This is a boot input, never a persisted product setting.
 
-### The ordinary `adb-root` module
-
-Root adb is not part of egysk core. The direct package enables `modules/adb-root`
-on **every boot**, independently of `androidboot.egysk.debug`. It follows
-[tiann/adb_root](https://github.com/tiann/adb_root)'s Android 11+ module design:
-module `sepolicy.rule`, `system.prop`, and a bind-mounted adbd APEX bin directory
-with stock `adbd.real`, an owned static wrapper and a small preload. No upstream
-binaries are vendored. The preload's `__android_log_is_debuggable()` and
-`property_get("ro.debuggable")` overrides affect only adbd; the wrapper execs
-`adbd.real --root_seclabel=u:r:egysk:s0`. Android's global `ro.debuggable` is not
-changed, and `LD_PRELOAD` is removed before child processes can inherit it.
-
-The module uses existing mechanisms, with no core adb special case:
-
-- `sepolicy.rule` is admitted with other module policy by Magiskinit. It declares
-  `egysk` and `adbd` permissive and permits init's `process2 nosuid_transition`,
-  matching the reference module's policy with its root domain mapped to `egysk`.
-- `system.prop` sets `service.adb.root=1` and `ro.adb.secure=0`. Native module
-  projection loads it at post-fs and post-fs-data. The early setup script also
-  loads that same file with resetprop before attempting to launch adbd.
-- `early-init.sh` (the existing blocking module callback at init) marks the
-  module ready and attempts the bind. `post-fs.sh`, `post-fs-data.sh` and the
-  module's `initrc/adb-root.rc` action on `apexd.status=ready` retry when the APEX
-  becomes available. Missing APEX returns only from that invocation, never
-  disables the later hooks. The bind captures the current boot's stock adbd,
-  applies its attributes and restarts adbd once per newly installed bind.
-  Wrapper exec failures log the attempted operation and errno directly to kmsg
-  before returning 127, distinguishing an exec denial from USB configuration.
-- Once `ro.persistent_properties.ready=true`, setup adds `adb` to
-  `persist.sys.usb.config`, preserving other USB functions. A module RC action
-  handles that readiness event so `load_persist_props` cannot overwrite the
-  change. It does not poke `sys.usb.config` or install a USB-config trigger.
-- A conventional `skip_mount` marker suppresses automatic system projection;
-  the module explicitly binds its `system/apex/com.android.adbd/bin` instead.
-
-**This module persists USB debugging enablement and deliberately provides
-unauthenticated root adb, even with the debug boot flag off. Anyone with access
-to its adb transport gains permissive-domain root. Lab use only.** Disabling
-the module does not undo the persisted USB preference; restore that preference
-explicitly if desired. The debug boot flag controls only shell SU/PATH injection.
-
-For device qualification, require USB enumeration and `adb shell id` reporting
-UID 0 without authorization on both debug-flag settings, then test `adb install`
-and forwarding separately. Compare shell SU/PATH with the flag off/on. A forced
-failing early hook must include its stderr tail/status in kmsg and `egysk.log`.
-Other installed root providers can independently expose their own `su`.
+Egysk ships no adb change: adbd, its authorization and the USB configuration are
+stock. Compare shell SU/PATH with the flag off/on. A forced failing early hook
+must include its stderr tail/status in kmsg and `egysk.log`. Other installed root
+providers can independently expose their own `su`.
 
 ## ESP and Unix backing
 
@@ -274,10 +232,6 @@ out/direct-esp/
   egysk/egysk.toml
   egysk/bin/{egyskd,magiskpolicy,init-ld,util_functions.sh,busybox}
   egysk/modules/lkm-loader/{module.prop,pid1.sh,bin/lkm-loader}
-  egysk/modules/adb-root/{module.prop,sepolicy.rule,system.prop,skip_mount,
-                         early-init.sh,post-fs.sh,post-fs-data.sh,setup.sh,
-                         initrc/adb-root.rc}
-  egysk/modules/adb-root/system/apex/com.android.adbd/bin/{adbd,libadb-root.so}
   egysk/modules_order
   direct/egysk.cpio                legacy-LZ4 (despite the .cpio suffix)
 ```
@@ -287,7 +241,7 @@ dependencies. When a package supplies `kmod/modules.load`, PID1 also runs the
 payload loader, which continues to reject an empty list. The common tree and
 archive come from exactly the same native inputs/config. No `rom/`, BLS entry
 or maos executable is generated.
-`modules_order` contains `lkm-loader` followed by `adb-root`.
+`modules_order` contains `lkm-loader`.
 Copy this tree only to a dedicated/direct ESP package: managed and direct backing
 descriptors cannot share one active `egysk/egysk.toml`.
 
@@ -310,10 +264,7 @@ The producer uses ONDK's compiler/Rust toolchain and locked dependencies.
 Magiskinit links full static Bionic from NDK r29: early filesystem/process hooks
 exceed crt0's small libc subset, and r30 libc embeds conflicting Rust std symbols.
 `out/native/<abi>/bin` supplies `egyskinit`, `egyskd`, `magiskpolicy`, `init-ld`
-and installer utilities. The separate `out/native/<abi>/modules/adb-root` tree
-contains the optional module, whose wrapper/preload are compiled from owned C
-sources by the same explicit NDK r29 toolchain. The direct packager consumes
-that sibling module tree as well as `bin/`. Static BusyBox is a separate input.
+and installer utilities. Static BusyBox is a separate input.
 The same core binaries can be packaged with independently admitted LKM sets for
 multiple KMIs. Kernel source, DDK and module build recipes live in `maos-lkms`,
 not in the core build.
