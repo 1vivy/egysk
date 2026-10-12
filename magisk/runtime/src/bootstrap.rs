@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 pub fn stage_tools(config: &BootstrapConfig) -> Result<()> {
     let mut tools = BTreeSet::from(BOOTSTRAP_TOOLS);
-    tools.insert(config.backing.helper.as_str());
+    tools.extend(config.backing.helper.as_deref());
     tools.extend(config.tools.iter().map(String::as_str));
     for name in tools {
         identifier(name)?;
@@ -49,9 +49,16 @@ struct BackingResult {
 /// The helper coordinates an existing Android metadata mount and never formats.
 pub fn prepare_backing(config: &BootstrapConfig) -> Result<Vec<PathBuf>> {
     let backing = &config.backing;
+    if backing.kind == "filesystem" {
+        return adopt_filesystem(backing);
+    }
+    let helper = backing
+        .helper
+        .as_deref()
+        .context("missing backing helper")?;
     let output_path = Path::new(ROOT).join("backing-result");
     let output = fs::File::create(&output_path)?;
-    let mut command = Command::new(Path::new(BIN).join(&backing.helper));
+    let mut command = Command::new(Path::new(BIN).join(helper));
     crate::scripts::child_signals(&mut command);
     command.process_group(0).arg("prepare-backing").args([
         "--kind",
@@ -85,12 +92,7 @@ pub fn prepare_backing(config: &BootstrapConfig) -> Result<Vec<PathBuf>> {
         .spawn()
         .context("start physical metadata bootstrap")?;
     crate::scripts::wait_until(&mut child, Instant::now() + Duration::from_secs(35), false)
-        .with_context(|| {
-            format!(
-                "physical metadata bootstrap {} prepare-backing",
-                backing.helper
-            )
-        })?;
+        .with_context(|| format!("physical metadata bootstrap {} prepare-backing", helper))?;
     let result: BackingResult = serde_json::from_str(&fsu::text(&output_path, 4096)?)?;
     ensure!(
         fsu::mounted(Path::new(STORE))?,
@@ -110,6 +112,49 @@ pub fn prepare_backing(config: &BootstrapConfig) -> Result<Vec<PathBuf>> {
         );
     }
     Ok(result.owned_mounts)
+}
+
+/// Adopt a stock mount, never create or repair it. Only the store bind is ours.
+fn adopt_filesystem(backing: &Backing) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    ensure!(
+        mountinfo.lines().any(|line| {
+            let Some((mount, filesystem)) = line.split_once(" - ") else {
+                return false;
+            };
+            let mut fields = mount.split_whitespace();
+            fields.nth(4) == Some(backing.mount_at.as_str())
+                && fields
+                    .next()
+                    .is_some_and(|flags| flags.split(',').any(|f| f == "rw"))
+                && filesystem.split_whitespace().next() == Some(backing.fs_type.as_str())
+        }),
+        "stock backing {} is not mounted read-write as {}",
+        backing.mount_at,
+        backing.fs_type
+    );
+    let source = Path::new(&backing.mount_at).join("egysk");
+    fsu::directory(&source)?;
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o700))?;
+    let store = Path::new(STORE);
+    if fsu::mounted(store)? {
+        let original = fs::metadata(&source)?;
+        let bound = fs::metadata(store)?;
+        ensure!(
+            original.dev() == bound.dev() && original.ino() == bound.ino(),
+            "store is not the stock backing's egysk subtree"
+        );
+        return Ok(Vec::new());
+    }
+    fsu::mount(
+        source.to_str().context("non UTF-8 store source")?,
+        store,
+        "",
+        libc::MS_BIND,
+        "",
+    )?;
+    Ok(vec![store.to_owned()])
 }
 
 pub fn initialize_store() -> Result<()> {

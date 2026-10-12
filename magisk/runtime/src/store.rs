@@ -88,11 +88,27 @@ fn inventory_root(root: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 pub fn discover(config: &BootstrapConfig, mode: BootMode) -> Result<Vec<Module>> {
+    discover_with_store(config, mode, true)
+}
+
+/// Read-only package inventory before Android has mounted filesystem backing.
+pub fn discover_package(config: &BootstrapConfig, mode: BootMode) -> Result<Vec<Module>> {
+    discover_with_store(config, mode, false)
+}
+
+fn discover_with_store(
+    config: &BootstrapConfig,
+    mode: BootMode,
+    with_store: bool,
+) -> Result<Vec<Module>> {
     if config.safe_mode || mode == BootMode::Charger {
         return Ok(Vec::new());
     }
     let mut all = BTreeMap::new();
     for owner in [Owner::Esp, Owner::Local] {
+        if owner == Owner::Local && !with_store {
+            continue;
+        }
         for id in inventory_root(&owner_root(owner).join("modules"))? {
             ensure!(
                 all.insert(id.clone(), owner).is_none(),
@@ -109,6 +125,9 @@ pub fn discover(config: &BootstrapConfig, mode: BootMode) -> Result<Vec<Module>>
         let directory = owner_root(owner).join("modules").join(&id);
         let preferences = Path::new(STORE).join("preferences").join(&id);
         let overridden = |flag: &str| -> Result<bool> {
+            if !with_store {
+                return valued_flag(&directory, flag);
+            }
             match fsu::optional_text(&preferences.join(flag), 64)? {
                 Some(value) => Ok(matches!(value.trim(), "1" | "true")),
                 None => valued_flag(&directory, flag),

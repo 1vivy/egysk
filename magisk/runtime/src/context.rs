@@ -22,12 +22,15 @@ pub const DAEMON: &str = "egyskd";
 pub const POLICY_TOOL: &str = "magiskpolicy";
 pub const INIT_PRELOAD: &str = "init-ld";
 pub const FILE_CONTEXT: &str = "u:object_r:egysk_file:s0";
-pub const BOOTSTRAP_TOOLS: [&str; 5] = [
+pub const BOOTSTRAP_TOOLS: [&str; 8] = [
     DAEMON,
     "busybox",
     POLICY_TOOL,
     "util_functions.sh",
     INIT_PRELOAD,
+    "egysk-adb.sh",
+    "egysk-adbd",
+    "libegysk-adb.so",
 ];
 
 // Persisted storage-format markers, not executable/product aliases. Keeping
@@ -65,8 +68,9 @@ pub struct Backing {
     pub partition: Option<String>,
     pub fs_type: String,
     pub mount_at: String,
-    /// Independently staged executable filename, never inside its module view.
-    pub helper: String,
+    /// Block backing helper; filesystem backing is adopted natively after init.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -187,7 +191,23 @@ impl BootstrapConfig {
         }
         absolute(&self.backing.mount_at)?;
         identifier(&self.backing.fs_type)?;
-        identifier(&self.backing.helper)?;
+        if self.backing.kind == "filesystem" {
+            ensure!(
+                self.backing.source.as_deref() == Some(self.backing.mount_at.as_str()),
+                "filesystem backing must adopt its source mount"
+            );
+            ensure!(
+                self.backing.helper.is_none() && self.backing.args.is_empty(),
+                "filesystem backing does not use a helper"
+            );
+        } else {
+            identifier(
+                self.backing
+                    .helper
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("block backing requires a helper"))?,
+            )?;
+        }
         if let Some(path) = &self.esp_device {
             absolute(path)?;
         }

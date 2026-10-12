@@ -75,7 +75,29 @@ pub fn actions(tmp: &str) -> String {
         crate::consts::MAGISK_PROC_CON,
     );
     let failure = r#" || { echo 'egysk native callback failed' > /dev/kmsg; echo c > /proc/sysrq-trigger; kill -ABRT 1; exit 1; }""#;
+    let adb = if egysk_runtime::debug_boot(
+        &std::fs::read_to_string("/proc/bootconfig").unwrap_or_default(),
+        &std::fs::read_to_string("/proc/cmdline").unwrap_or_default(),
+    ) {
+        let setup = format!(
+            r#"exec {} 0 0 -- {tmp}/bin/busybox sh -c "{tmp}/bin/busybox sh {tmp}/bin/egysk-adb.sh{failure}"#,
+            crate::consts::MAGISK_PROC_CON,
+        );
+        format!(r#"
+on init
+    {setup}
+on property:apexd.status=ready
+    {setup}
+on post-fs-data
+    {setup}
+on property:sys.usb.config=*
+    {setup}
+"#)
+    } else {
+        String::new()
+    };
     format!(r#"
+{adb}
 on init
     {guard} --egysk-stage init{failure}
 on early-fs

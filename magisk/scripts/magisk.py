@@ -229,6 +229,15 @@ def build(args: argparse.Namespace) -> None:
     for source, name in (("egyskd", "egyskd"), ("magiskinit", "egyskinit"), ("magiskpolicy", "magiskpolicy")):
         shutil.copy2(args.output / "native/out" / args.abi / source, destination / name)
     shutil.copy2(args.output / "native/out" / args.abi / "libinit-ld.so", destination / "init-ld")
+    # Own adb wrapper/preload, using the same explicit NDK r29 as PID1.
+    llvm = static_ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
+    compiler_triple = "armv7a-linux-androideabi" if args.abi == "armeabi-v7a" else triples[args.abi]
+    cc = llvm / f"{compiler_triple}35-clang"
+    flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-Wl,-z,max-page-size=16384"]
+    run(cc, *flags, "-static", PRODUCT / "adbd.c", "-o", destination / "egysk-adbd")
+    run(cc, *flags, "-shared", "-fPIC", PRODUCT / "adb_preload.c", "-ldl",
+        "-o", destination / "libegysk-adb.so")
+    shutil.copy2(PRODUCT / "egysk-adb.sh", destination / "egysk-adb.sh")
     flags = (args.output / "native/out/generated/flags.h").read_text()
     version = re.search(r'^#define MAGISK_VERSION\s+"([^"]+)"$', flags, re.MULTILINE)
     code = re.search(r"^#define MAGISK_VER_CODE\s+(\d+)$", flags, re.MULTILINE)

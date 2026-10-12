@@ -79,8 +79,7 @@ fn producer_only_kernel_selection_is_not_a_runtime_contract() {
         kind = "filesystem"
         source = "/metadata"
         fs_type = "f2fs"
-        mount_at = "/dev/egysk/metadata"
-        helper = "maos-credentials"
+        mount_at = "/metadata"
     "#;
     let config = parse_bootstrap_config(text).unwrap();
     let saved = serde_json::to_string(&config).unwrap();
@@ -93,6 +92,30 @@ fn shared_package_cannot_redirect_the_bootstrap_backing() {
     let mut package = config();
     package.backing.source = Some("/dev/block/by-name/other-metadata".into());
     assert!(package.for_boot(config()).is_err());
+}
+
+#[test]
+fn direct_backing_adopts_stock_mount_without_helper_and_must_match_package() {
+    let text = r#"
+        [backing]
+        kind = "filesystem"
+        source = "/metadata"
+        fs_type = "f2fs"
+        mount_at = "/metadata"
+    "#;
+    let direct = parse_bootstrap_config(text).unwrap();
+    assert!(direct.backing.helper.is_none());
+    assert!(direct.clone().for_boot(direct.clone()).is_ok());
+    let mut changed = direct.clone();
+    changed.backing.fs_type = "ext4".into();
+    assert!(changed.for_boot(direct.clone()).is_err());
+    let mut changed = direct.clone();
+    changed.backing.mount_at = "/dev/egysk/metadata".into();
+    assert!(changed.validate().is_err());
+    let mut changed = direct;
+    changed.backing.helper = Some("maos-credentials".into());
+    assert!(changed.validate().is_err());
+    assert!(parse_bootstrap_config(&text.replace("filesystem", "block")).is_err());
 }
 
 #[test]

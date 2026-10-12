@@ -8,8 +8,11 @@ EFI I/O and credential-consumer gates require separate evidence.
 Report the exact product commit, Magisk pin/patchset, kernel KMI and configuration.
 
 There is no product kernel helper or alternate root-provider ABI. Native
-upstream SU machinery retains authorization; separation must not become an
-unauthenticated request path.
+upstream SU machinery retains authorization outside the explicit lab debug mode.
+`androidboot.egysk.debug=1` intentionally grants shell SU and starts
+unauthenticated root adbd in the permissive `egysk` domain. Anyone with access to
+the adb transport has full root access on that boot. Never use this mode on a
+production or untrusted transport; flag-off boots must retain stock adb behavior.
 An installed root's files, socket, ordinary SU entrypoint and
 lifecycle are not ours to appropriate.
 

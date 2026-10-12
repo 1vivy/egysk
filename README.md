@@ -93,6 +93,13 @@ module projection.
 5. Upstream module collection, stage serialization, magic mount and later
    post-fs-data/service/boot-completed work remain the single lifecycle.
 
+Filesystem backing (direct mode) has no store or module rdinit hooks before
+first-stage init. PID1 still runs the stock vendor LKM loader and stages tools
+and read-only ESP package RC/policy. The existing blocking `init` callback then
+adopts the stock mount, creates the store bind, activates pending changes, opens
+the log/database and runs the early-init/init module stages. Block backing keeps
+its existing rdinit preparation and teardown. There is no RAM store fallback.
+
 The new early hooks do not run post-fs-data scripts before `/data` exists.
 Module RC is ordinary Android RC, not input to a second parser or service
 manager. Platform modules own their domains and service schedules. Preparation
@@ -123,7 +130,7 @@ stage and exit status in fatal messages (signal termination uses `128 + signal`)
 Native hook stderr also streams into prefixed log records, including non-blocking
 service and post-fs-data hooks; long/partial lines are split into bounded records.
 
-## Lab-only shell root
+## Lab-only shell and adb root
 
 Set `androidboot.egysk.debug=1` in the bootconfig or kernel command line to grant
 UID 2000 (Android's `shell`) upstream MagiskSU `Allow` policy and project egysk's
@@ -133,16 +140,29 @@ policy before accepting requests: a boot with the flag absent or any other value
 deletes UID 2000's row from the shared physical-store database and does not inject
 `su`. This is a boot input, never a persisted product setting.
 
-On a dev boot, `adb shell su -c id` should report UID 0. `adbd`, its authentication,
-APEX and Android properties are unchanged; this does **not** enable `adb root`.
-All processes running as UID 2000 gain this access, and the root shell uses the
-permissive `egysk` domain: **lab use only**, not a production security mode.
-Existing Magisk foundation rules already let `shell` execute `egysk_file` and
-connect to the daemon's Unix socket; no extra SELinux rule is needed.
+On a debug boot, egysk also enables **unauthenticated root adb**. Its native RC
+runs the built-in setup at `init`, `apexd.status=ready` and `post-fs-data`, with
+USB-config changes reconciled through a property action. As soon as the adbd APEX
+is visible, it binds an executable tmpfs bin view over the APEX's bin directory.
+A static wrapper execs the retained stock `adbd.real` in the same APEX linker
+namespace with an owned preload and `--root_seclabel=u:r:egysk:s0`. The preload
+makes only adbd debuggable and clears `LD_PRELOAD` before it can reach child
+processes. It does not set Android's global `ro.debuggable`.
+
+The boot-local properties are `ro.adb.secure=0`, `service.adb.root=1`, and a
+`sys.usb.config` containing `adb`; no persistent USB/debug setting is written.
+Egysk owns the boot-scoped policy permitting adbd's transition to `egysk` and
+root-daemon socket/fd/binder use for adb operations. Non-debug boots emit none
+of these RC actions or policy additions and do not change adbd, its auth or USB.
+`adb shell id` should report UID 0; `adb shell su -c id` also works on debug boots.
+**Anyone with access to the adb transport gains a permissive-domain root shell
+without authorization. Lab use only, never a production security mode.**
 
 For device qualification, compare flag-off/on boots: off has no egysk-injected
-`su` and no UID-2000 policy row; on permits the command above. A forced failing
-early hook must include its stderr tail and status in kmsg and `egysk.log`.
+`su`, no UID-2000 policy row, and stock adbd/auth/USB; on permits both commands
+above without an adb authorization dialog. Check `adb install` and port
+forwarding under enforcing policy as separate proofs. A forced failing early
+hook must include its stderr tail and status in kmsg and `egysk.log`.
 Other installed root providers can independently expose their own `su`.
 
 ## ESP and Unix backing
@@ -158,11 +178,14 @@ Other installed root providers can independently expose their own `su`.
 /dev/egysk/state/<id>/           shared durable module state
 ```
 
-The backing descriptor is opaque to the core. A separately staged helper exposes
-the existing Unix-capable filesystem; it cannot depend on the views it is about
-to construct. There is no module-storage LV, formatting, per-ROM module profile,
-capacity manager or silent ephemeral fallback. Android credential state remains
-outside module upper/work trees.
+Block backing is exposed by a separately staged helper; it cannot depend on the
+views it is about to construct. Filesystem backing is adopted natively, without
+a helper: its source must equal its mount point and already be mounted read-write
+with the configured filesystem type. Only the `egysk/` subtree is bound into
+`/dev/egysk/store`; egysk never mounts or formats the stock source filesystem.
+There is no module-storage LV, formatting, per-ROM module profile, capacity
+manager or silent ephemeral fallback. Android credential state remains outside
+module upper/work trees.
 
 VFAT cannot be an OverlayFS lower. ESP module content is copied to verified,
 read-only tmpfs lowers; only generation-specific upper/work pairs persist on
@@ -178,6 +201,63 @@ upper/work pairs. Durable module state is outside generations. Never change an
 active lower or reuse an upper/work pair while overlays reference it. Package
 activation journals recover interrupted renames; they are not boot receipts.
 Module removal must never traverse credential siblings.
+
+## Direct stock Android (no maos)
+
+Direct mode needs no managed ROM identity, ROM config, userdata PV, projection,
+maos tools/modules, or custom LKMs. Surfacer's ROM-less launch selects stock
+Android and appends `direct/egysk.cpio` with `rdinit=/egyskinit` and
+`androidboot.egysk.debug=1`. The integration owner writes the BLS launcher entry;
+this repository only produces the ESP files, never installs them on a device.
+
+Both the appended archive's `/egysk.toml` and `egysk/egysk.toml` contain:
+
+```toml
+[backing]
+kind = "filesystem"
+source = "/metadata"
+fs_type = "f2fs"
+mount_at = "/metadata"
+```
+
+The existing cpio/package equality check remains mandatory. Native adoption
+fails rather than using an unmounted directory or the wrong filesystem. The
+private store is `/metadata/egysk`, not all of `/metadata`. **[INFERENCE]** Stock
+OnePlus first-stage init has mounted f2fs `/metadata` before the second-stage
+`init` event. **[INFERENCE]** The adbd APEX is available by the ready callback in
+the default service mount namespace; vendor USB actions honor `sys.usb.config`.
+These timings, root/no-auth adb and enforcing SELinux require device proof.
+
+One command builds the native core, own LKM-loader, host archive builder and a
+fresh direct ESP tree (static BusyBox is an explicit independently supplied input):
+
+```sh
+just build_direct /path/to/ondk-r30.1 /path/to/android-ndk-r29 \
+  /path/to/static-aarch64-busybox android16-6.12-6 out/direct-esp
+```
+
+The optional sixth argument is `aarch64` (default) or `x86_64`; the seventh is
+the generated native source tree (default `out/Magisk-direct`). As with the
+native producer, use a fresh source-tree path after changing product sources;
+existing generated sources are never silently overwritten. Output must not
+already exist. There are no downloads by the packager or device writes.
+
+```text
+out/direct-esp/
+  egysk/build-id
+  egysk/egysk.toml
+  egysk/bin/{egyskd,magiskpolicy,init-ld,util_functions.sh,busybox,
+             egysk-adbd,libegysk-adb.so,egysk-adb.sh}
+  egysk/modules/lkm-loader/{module.prop,pid1.sh,bin/lkm-loader,kmod/modules.load}
+  egysk/modules_order
+  direct/egysk.cpio                legacy-LZ4 (despite the .cpio suffix)
+```
+
+The empty payload `modules.load` adds no product LKMs; `pid1.sh` loads only the
+stock vendor dependencies. The common tree and archive come from exactly the
+same native inputs/config. No `rom/`, BLS entry or maos executable is generated.
+Copy this tree only to a dedicated/direct ESP package: managed and direct backing
+descriptors cannot share one active `egysk/egysk.toml`.
 
 ## Native build and upstream rebases
 
@@ -198,7 +278,9 @@ The producer uses ONDK's compiler/Rust toolchain and locked dependencies.
 Magiskinit links full static Bionic from NDK r29: early filesystem/process hooks
 exceed crt0's small libc subset, and r30 libc embeds conflicting Rust std symbols.
 `out/native/<abi>/bin` supplies `egyskinit`, `egyskd`, `magiskpolicy`,
-`init-ld` and installer utilities. Static BusyBox is a separate explicit input.
+`init-ld`, `egysk-adbd`, `libegysk-adb.so`, `egysk-adb.sh` and installer utilities.
+The wrapper and preload are compiled from owned C sources by the same explicit
+NDK r29 toolchain. Static BusyBox is a separate explicit input.
 The same core binaries can be packaged with independently admitted LKM sets for
 multiple KMIs. Kernel source, DDK and module build recipes live in `maos-lkms`,
 not in the core build.

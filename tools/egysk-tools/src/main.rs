@@ -430,6 +430,7 @@ fn build(args: &Args) -> Result<()> {
         "egysk/bin/egyskd",
         "egysk/bin/magiskpolicy",
         "egysk/bin/busybox",
+        "egysk/bin/egysk-adbd",
         "egysk/modules/lkm-loader/bin/lkm-loader",
     ] {
         let input = files
@@ -449,18 +450,24 @@ fn build(args: &Args) -> Result<()> {
             "bootstrap requires lkm-loader/{name}"
         );
     }
-    let preload = files
-        .get("egysk/bin/init-ld")
-        .context("bootstrap requires upstream init-ld")?;
-    let preload_elf = elf(&preload.bytes, args.arch)?;
-    ensure!(
-        preload_elf.header.e_type == header::ET_DYN && preload_elf.interpreter.is_none(),
-        "init-ld must be a shared ELF without an interpreter"
-    );
+    for name in ["init-ld", "libegysk-adb.so"] {
+        let preload = files
+            .get(&format!("egysk/bin/{name}"))
+            .with_context(|| format!("bootstrap requires {name}"))?;
+        let preload_elf = elf(&preload.bytes, args.arch)?;
+        ensure!(
+            preload_elf.header.e_type == header::ET_DYN && preload_elf.interpreter.is_none(),
+            "{name} must be a shared ELF without an interpreter"
+        );
+    }
     for (name, input) in &files {
         if name.ends_with(".ko") {
             verify_module(name, input, args.arch).with_context(|| format!("verify {name}"))?;
-        } else if name != "egysk/bin/init-ld" && input.bytes.starts_with(b"\x7fELF") {
+        } else if !matches!(
+            name.as_str(),
+            "egysk/bin/init-ld" | "egysk/bin/libegysk-adb.so"
+        ) && input.bytes.starts_with(b"\x7fELF")
+        {
             executable(
                 &input.bytes,
                 args.arch,

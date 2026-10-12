@@ -40,6 +40,18 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
     let debug = crate::debug_boot(&bootconfig, &cmdline);
     fsu::directory(Path::new(BIN))?;
     bootstrap::stage_tools(&config)?;
+    if config.backing.kind == "filesystem" {
+        // Stock first-stage init owns this mount. No store, state, writable views
+        // or module rdinit hooks exist yet; only package RC/policy is admitted.
+        let storage = Storage {
+            config,
+            mode,
+            debug,
+            esp,
+            backing: 0,
+        };
+        return Ok((storage, Vec::new()));
+    }
     bootstrap::prepare_backing(&config)?;
     bootstrap::initialize_store()?;
     store::reclaim_lower_caches()?;
@@ -71,7 +83,7 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
     fsu::directory(overlay)?;
     fsu::directory(&overlay.join("bin"))?;
     let mut tools = std::collections::BTreeSet::from(BOOTSTRAP_TOOLS);
-    tools.insert(storage.config.backing.helper.as_str());
+    tools.extend(storage.config.backing.helper.as_deref());
     tools.extend(storage.config.tools.iter().map(String::as_str));
     for tool in tools {
         fs::copy(Path::new(BIN).join(tool), overlay.join("bin").join(tool))?;
@@ -80,8 +92,19 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
     fsu::atomic(&overlay.join("storage.json"), &serde_json::to_vec(storage)?)?;
     let mut rc = String::new();
     let mut policy = String::new();
+    let package_modules;
+    let modules = if storage.config.backing.kind == "filesystem" {
+        package_modules = store::discover_package(&storage.config, storage.mode)?;
+        &package_modules
+    } else {
+        modules
+    };
     for module in modules {
-        let root = Path::new(MODULES).join(&module.id);
+        let root = if storage.config.backing.kind == "filesystem" {
+            store::lower(module)
+        } else {
+            Path::new(MODULES).join(&module.id)
+        };
         if let Some(rules) = fsu::optional_text(&root.join("sepolicy.rule"), 1024 * 1024)? {
             policy.push_str(&rules);
             policy.push('\n');
@@ -95,6 +118,9 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
                 }
             }
         }
+    }
+    if storage.debug {
+        policy.push_str(crate::adb::POLICY);
     }
     fsu::atomic(
         Path::new("/egysk-overlay.d/egysk-modules.rc"),
@@ -113,11 +139,19 @@ pub fn open_android() -> Result<()> {
         config.backing.partition = None;
     }
     bootstrap::prepare_backing(&config)?;
-    ensure!(
-        fs::metadata(STORE)?.dev() == storage.backing,
-        "metadata backing changed during boot"
-    );
+    if config.backing.kind == "block" {
+        ensure!(
+            fs::metadata(STORE)?.dev() == storage.backing,
+            "metadata backing changed during boot"
+        );
+    }
     bootstrap::initialize_store()?;
+    if config.backing.kind == "filesystem" {
+        store::reclaim_lower_caches()?;
+        if !config.safe_mode && storage.mode != BootMode::Charger {
+            store::activate_pending(storage.mode, &config.backing.mount_at)?;
+        }
+    }
     bootstrap::label_tree(Path::new(STORE), FILE_CONTEXT)?;
     let modules = store::discover(&config, storage.mode)?;
     store::mount_view(&modules, store::ViewStage::Android)?;
