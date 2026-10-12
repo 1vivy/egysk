@@ -121,12 +121,21 @@ fn legacy_framing_roundtrips_a_full_block_and_partial_final_block() {
 }
 
 #[test]
-fn bootstrap_rejects_obsolete_helper_at_every_archive_depth() {
-    for path in ["egysk.ko", "egysk.ko.compat.json", "egysk/modules/egysk.ko"] {
+fn bootstrap_refuses_the_obsolete_helper_and_producer_module_metadata() {
+    for path in ["egysk.ko", "egysk/modules/egysk.ko"] {
+        assert!(member(path).is_err(), "{path}");
+    }
+    for path in [
+        "egysk/kmod/dm-thin-pool.ko.compat.json",
+        "egysk/kmod/dm-thin-pool.ko.build.json",
+        "egysk/modules/lkm-loader/kmod/part-projection.ko.compat.json",
+    ] {
         assert!(member(path).is_err(), "{path}");
     }
     assert!(member("egysk/bin/magiskinit").is_err());
     assert!(member("egysk/bin/egyskd").is_ok());
     assert!(member("egysk/bin/init-ld").is_ok());
+    assert!(member("egysk/kmod/dm-thin-pool.ko").is_ok());
+    assert!(member("egysk/kmod/modules.load").is_ok());
     assert!(member("modules/efivar_store.ko").is_ok());
 }

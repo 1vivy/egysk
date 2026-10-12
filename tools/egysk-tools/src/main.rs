@@ -3,7 +3,7 @@
 use android_bootimg::cpio::{Cpio, CpioEntry};
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
-use goblin::elf::{Elf, header, program_header, sym};
+use goblin::elf::{Elf, header, program_header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,7 +72,7 @@ struct Args {
     arch: Arch,
     #[arg(long)]
     artifact_dir: PathBuf,
-    /// Root-relative configuration, static early tools, and critical LKMs with receipts.
+    /// Root-relative configuration, static early tools and the critical LKMs.
     #[arg(long)]
     bootstrap_dir: PathBuf,
     #[arg(long)]
@@ -101,19 +101,6 @@ struct FileReceipt {
     sha256: String,
     size: usize,
     mode: u32,
-}
-#[derive(Deserialize)]
-struct Imports {
-    versioned: usize,
-    kallsyms: Vec<String>,
-}
-#[derive(Deserialize)]
-struct CompatibilityReceipt {
-    schema_version: u32,
-    kmi: Kmi,
-    module_sha256: String,
-    kmi_out_inputs: BTreeMap<String, String>,
-    imports: Imports,
 }
 #[derive(Serialize)]
 struct BuildReceipt {
@@ -144,10 +131,12 @@ fn member(path: &str) -> Result<()> {
         "bootstrap payload claims reserved archive entry: {path}"
     );
     ensure!(
-        !path
-            .split('/')
-            .any(|part| matches!(part, "egysk.ko" | "egysk.ko.compat.json")),
+        !path.split('/').any(|part| part == "egysk.ko"),
         "obsolete kernel helper is forbidden: {path}"
+    );
+    ensure!(
+        !path.ends_with(".compat.json") && !path.ends_with(".build.json"),
+        "producer module metadata is not a payload member: {path}"
     );
     ensure!(
         path != "egysk/bin/magiskinit",
@@ -341,48 +330,12 @@ fn section<'a>(bytes: &'a [u8], elf: &Elf<'_>, name: &str) -> Result<&'a [u8]> {
         .context("ELF section overflow")?;
     bytes.get(start..end).context("ELF section outside input")
 }
-fn nul_name(bytes: &[u8]) -> Result<&str> {
-    let end = bytes
-        .iter()
-        .position(|&v| v == 0)
-        .context("unterminated ELF name")?;
-    std::str::from_utf8(&bytes[..end]).context("non-UTF8 ELF name")
-}
-fn verify_module(
-    name: &str,
-    input: &Input,
-    receipt_input: &Input,
-    kmi: &Kmi,
-    arch: Arch,
-) -> Result<()> {
+fn verify_module(name: &str, input: &Input, arch: Arch) -> Result<()> {
     let elf = elf(&input.bytes, arch)?;
     ensure!(
         elf.header.e_type == header::ET_REL,
         "kernel module is not ET_REL: {name}"
     );
-    let receipt: CompatibilityReceipt =
-        serde_json::from_slice(&receipt_input.bytes).context("module compatibility receipt")?;
-    ensure!(
-        receipt.schema_version == 2 && receipt.kmi == *kmi,
-        "module receipt KMI mismatch: {name}"
-    );
-    ensure!(
-        receipt.module_sha256 == digest(&input.bytes),
-        "module receipt hash mismatch: {name}"
-    );
-    for required in ["Module.symvers", "System.map", "utsrelease.h"] {
-        ensure!(
-            receipt
-                .kmi_out_inputs
-                .iter()
-                .any(
-                    |(path, hash)| Path::new(path).file_name().is_some_and(|n| n == required)
-                        && hash.len() == 64
-                        && hash.bytes().all(|c| c.is_ascii_hexdigit())
-                ),
-            "receipt missing build input {required}"
-        );
-    }
     let internal = Path::new(name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -412,55 +365,6 @@ fn verify_module(
     ensure!(
         tokens.len() == flags.len() + 1 && &tokens[1..] == flags,
         "module vermagic flags mismatch"
-    );
-    let mut versions = BTreeSet::new();
-    let normal = section(&input.bytes, &elf, "__versions")?;
-    ensure!(normal.len() % 64 == 0, "malformed module symbol versions");
-    for record in normal.as_chunks::<64>().0 {
-        ensure!(
-            versions.insert(nul_name(&record[8..])?.to_owned()),
-            "duplicate versioned symbol"
-        );
-    }
-    let ext_names = section(&input.bytes, &elf, "__version_ext_names")?;
-    let ext_crcs = section(&input.bytes, &elf, "__version_ext_crcs")?;
-    if !ext_names.is_empty() || !ext_crcs.is_empty() {
-        ensure!(
-            ext_crcs.len() % 4 == 0 && ext_names.last() == Some(&0),
-            "malformed extended module versions"
-        );
-        let names: Vec<_> = ext_names
-            .split(|&v| v == 0)
-            .filter(|v| !v.is_empty())
-            .collect();
-        ensure!(
-            names.len() == ext_crcs.len() / 4,
-            "extended module version count mismatch"
-        );
-        for name in names {
-            versions.insert(std::str::from_utf8(name)?.to_owned());
-        }
-    }
-    ensure!(
-        versions.contains("module_layout") && receipt.imports.versioned == versions.len(),
-        "module version receipt mismatch"
-    );
-    let imports: BTreeSet<_> = elf
-        .syms
-        .iter()
-        .filter(|s| s.st_shndx == 0 && matches!(s.st_bind(), sym::STB_GLOBAL | sym::STB_WEAK))
-        .filter_map(|s| elf.strtab.get_at(s.st_name))
-        .filter(|s| !s.is_empty() && !versions.contains(*s))
-        .collect();
-    let private: BTreeSet<_> = receipt
-        .imports
-        .kallsyms
-        .iter()
-        .map(String::as_str)
-        .collect();
-    ensure!(
-        private.len() == receipt.imports.kallsyms.len() && imports == private,
-        "private module import receipt mismatch"
     );
     Ok(())
 }
@@ -555,11 +459,7 @@ fn build(args: &Args) -> Result<()> {
     );
     for (name, input) in &files {
         if name.ends_with(".ko") {
-            let receipt = files
-                .get(&format!("{name}.compat.json"))
-                .with_context(|| format!("missing receipt for {name}"))?;
-            verify_module(name, input, receipt, &kmi, args.arch)
-                .with_context(|| format!("verify {name}"))?;
+            verify_module(name, input, args.arch).with_context(|| format!("verify {name}"))?;
         } else if name != "egysk/bin/init-ld" && input.bytes.starts_with(b"\x7fELF") {
             executable(
                 &input.bytes,

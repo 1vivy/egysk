@@ -179,8 +179,9 @@ target/release/egysk-build-cpio --build-cpio --legacy-lz4 \
 ```
 
 The builder consumes explicit inputs and downloads nothing. Bootstrap supplies
-`egysk.toml`, native companions, the module objects with their producer
-compatibility receipts, and independent early tools. It never supplies stock
+`egysk.toml`, native companions, the module objects and independent early tools.
+No `*.compat.json` or `*.build.json` member is admitted: producer build metadata
+stays with its producer and never enters the archive. It never supplies stock
 `/init`, a second Magiskinit or the retired kernel helper. The owned PID 1
 loader module lives in `modules/lkm-loader`: `pid1.sh` loads the stock vendor
 modules, then the ordered `kmod/modules.load` payload list the platform packager
