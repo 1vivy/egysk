@@ -146,11 +146,12 @@ pub fn open_android() -> Result<()> {
         );
     }
     bootstrap::initialize_store()?;
-    if config.backing.kind == "filesystem" {
-        store::reclaim_lower_caches()?;
-        if !config.safe_mode && storage.mode != BootMode::Charger {
-            store::activate_pending(storage.mode, &config.backing.mount_at)?;
-        }
+    // Legacy lower-cache reclamation is PID1-only. Filesystem backing is first
+    // available here, after stock init has started, so leave those caches alone.
+    // Activation still checks that no effective module views are mounted.
+    if config.backing.kind == "filesystem" && !config.safe_mode && storage.mode != BootMode::Charger
+    {
+        store::activate_pending(storage.mode, &config.backing.mount_at)?;
     }
     bootstrap::label_tree(Path::new(STORE), FILE_CONTEXT)?;
     let modules = store::discover(&config, storage.mode)?;

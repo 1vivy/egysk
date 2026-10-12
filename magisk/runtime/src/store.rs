@@ -321,7 +321,8 @@ fn begin(id: &str, owner: Owner, source: &str, staged: &Path) -> Result<()> {
     fsu::atomic(&journal(id), &serde_json::to_vec(&transaction)?)?;
     recover(&transaction)
 }
-/// Called only in rdinit, before *any* module view is mounted. Never from prepare().
+/// Activate at first store opening, before any module view is mounted: rdinit
+/// for block backing, daemon startup at init for filesystem backing.
 pub fn activate_pending(mode: BootMode, backing_root: &str) -> Result<()> {
     fsu::directory(Path::new(STORE))?;
     let _lock = fsu::StoreLock::acquire(Path::new(STORE))?;

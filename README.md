@@ -97,8 +97,11 @@ Filesystem backing (direct mode) has no store or module rdinit hooks before
 first-stage init. PID1 still runs the stock vendor LKM loader and stages tools
 and read-only ESP package RC/policy. The existing blocking `init` callback then
 adopts the stock mount, creates the store bind, activates pending changes, opens
-the log/database and runs the early-init/init module stages. Block backing keeps
-its existing rdinit preparation and teardown. There is no RAM store fallback.
+the log/database and runs the early-init/init module stages. This daemon path
+does not reclaim legacy on-disk lower caches: that cleanup remains PID1-only.
+Activation still requires all effective module views to be unmounted. Block
+backing keeps its existing rdinit preparation, reclamation and teardown. There
+is no RAM store fallback.
 
 The new early hooks do not run post-fs-data scripts before `/data` exists.
 Module RC is ordinary Android RC, not input to a second parser or service
