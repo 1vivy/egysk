@@ -16,7 +16,7 @@ fn args(root: &Path, kmi: &str) -> Args {
 #[test]
 fn entry_option_accepts_only_the_shared_loader_identity() {
     assert_eq!(Entry::from_str("egyskinit", true).unwrap().name(), LOADER);
-    for alias in ["ksuinit", "esuinit"] {
+    for alias in ["init", "magiskinit"] {
         assert!(
             Entry::from_str(alias, true).is_err(),
             "{alias} is not an entry"
@@ -76,6 +76,9 @@ fn bootstrap_cannot_replace_init_or_follow_links() {
             .to_string()
             .contains("reserved")
     );
+    for name in [LOADER, RECEIPT, "egyskinit/bin/init"] {
+        assert!(member(name).is_err(), "{name}");
+    }
     fs::remove_file(root.path().join("init")).unwrap();
     fs::write(root.path().join("real"), b"payload").unwrap();
     std::os::unix::fs::symlink("real", root.path().join("link")).unwrap();

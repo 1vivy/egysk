@@ -31,8 +31,7 @@ pub const BOOTSTRAP_TOOLS: [&str; 5] = [
 ];
 
 // Persisted storage-format markers, not executable/product aliases. Keeping
-// these bytes preserves generation identity and interrupted activation journals
-// across the explicit offline root transition.
+// these bytes preserves generation identity and interrupted activation journals.
 pub const GENERATION_MARKER: &str = ".esp-generation";
 pub const TRANSACTION_TEMP_EXTENSION: &str = "esp-tmp";
 

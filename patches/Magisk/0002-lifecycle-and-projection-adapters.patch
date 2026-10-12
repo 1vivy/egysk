@@ -332,13 +332,11 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  Options:
     -c                        print current binary version
-@@ -25,20 +25,23 @@
+@@ -25,20 +25,21 @@
     --list                    list all available applets
     --remove-modules [-n]     remove all modules, reboot if -n is not provided
     --install-module ZIP      install a module zip file
 +   --module ACTION ID [GEN]  enable, disable, remove, cancel-remove, rollback
-+   --transition-product-state --offline ROOT
-+                             preserve existing state in offline maintenance
  
  Advanced Options (Internal APIs):
 -   --daemon                  manually start magisk daemon
@@ -362,20 +360,19 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  Available applets:
       {}
-@@ -62,8 +65,12 @@
+@@ -62,8 +63,11 @@
      List(ListApplets),
      RemoveModules(RemoveModules),
      InstallModule(InstallModule),
 +    StageInstall(StageInstall),
 +    Module(ModuleCmd),
-+    Transition(TransitionState),
      Daemon(StartDaemon),
      Stop(StopDaemon),
 +    EgyskStage(EgyskStage),
      PostFsData(PostFsData),
      Service(ServiceCmd),
      BootComplete(BootComplete),
-@@ -109,12 +116,48 @@
+@@ -109,12 +113,39 @@
  }
  
  #[derive(FromArgs)]
@@ -399,15 +396,6 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 +}
 +
 +#[derive(FromArgs)]
-+#[argh(subcommand, name = "--transition-product-state")]
-+struct TransitionState {
-+    #[argh(switch)]
-+    offline: bool,
-+    #[argh(positional)]
-+    backing_root: String,
-+}
-+
-+#[derive(FromArgs)]
  #[argh(subcommand, name = "--daemon")]
  struct StartDaemon {}
  
@@ -424,7 +412,7 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
  
  #[derive(FromArgs)]
  #[argh(subcommand, name = "--post-fs-data")]
-@@ -214,12 +257,64 @@
+@@ -214,12 +245,55 @@
              InstallModule(self::InstallModule { zip }) => {
                  install_module(&zip);
              }
@@ -458,15 +446,6 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
 +                    return base::log_err!("Module {action} {id}: {error:#}");
 +                }
 +            }
-+            Transition(TransitionState { offline, backing_root }) => {
-+                if !offline {
-+                    return base::log_err!("--offline asserts all product consumers are stopped");
-+                }
-+                match egysk_runtime::transition::offline_product_state(std::path::Path::new(&backing_root)) {
-+                    Ok(outcome) => println!("{outcome:?}"),
-+                    Err(error) => return base::log_err!("Offline product state transition: {error:#}"),
-+                }
-+            }
              Daemon(_) => {
                  let _ = connect_daemon(RequestCode::START_DAEMON, true)?;
              }
@@ -489,7 +468,7 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
              }
              PostFsData(_) => {
                  let fd = connect_daemon(RequestCode::POST_FS_DATA, true)?;
-@@ -239,6 +334,9 @@
+@@ -239,6 +313,9 @@
                  let _ = connect_daemon(RequestCode::ZYGOTE_RESTART, false)?;
              }
              UnlockBlocks(_) => {
@@ -499,7 +478,7 @@ diff --git a/native/src/core/magisk.rs b/native/src/core/magisk.rs
                  unlock_blocks();
              }
              RestoreCon(_) => {
-@@ -273,6 +371,11 @@
+@@ -273,6 +350,11 @@
                  return Ok(denylist_cli(&mut args));
              }
              PreInitDevice(_) => {

@@ -143,24 +143,6 @@ active lower or reuse an upper/work pair while overlays reference it. Package
 activation journals recover interrupted renames; they are not boot receipts.
 Module removal must never traverse credential siblings.
 
-## Explicit offline product-state transition
-
-```sh
-egyskd --transition-product-state --offline PHYSICAL_BACKING_ROOT
-```
-
-Stop consumers in **all namespaces** and expose the physical backing in an
-offline maintenance namespace first. `--offline` asserts that precondition; the
-command does not quiesce consumers. Run separately for metadata and ESP when
-needed. The root-only engine refuses PID1, live runtime roots, mount references,
-symlinks, missing state and old/new collisions. It locks the backing directory,
-renames `kernelsu-esp` to `egysk` with `RENAME_NOREPLACE`, and fsyncs the parent.
-There is no copy/merge/reset fallback or automatic managed-boot migration.
-
-The rename preserves module edits, xattrs and state. It does not traverse
-`password_slots` or change installation credentials. Credential adoption and
-replacement remain separate journaled, stopped-consumer platform operations.
-
 ## Native build and upstream rebases
 
 Magisk is pinned at `e8915d9db15f5aae93973ffe65068e34df375a6a` in
@@ -192,7 +174,7 @@ cargo build --release --locked -p egysk-tools
 target/release/egysk-build-cpio --build-cpio --legacy-lz4 \
   --kmi android16-6.12-6 --arch aarch64 --artifact-dir /path/to/releases \
   --bootstrap-dir /path/to/bootstrap --entry egyskinit \
-  --out /path/to/takeover.cpio.lz4
+  --out /path/to/egysk.cpio.lz4
 ```
 
 The builder consumes explicit inputs and downloads nothing. Bootstrap supplies
@@ -206,16 +188,6 @@ hashes/sizes/modes. It excludes itself and has no package build ID. The platform
 packager owns the separate immutable product `build-id` and schema-2 `set.json`.
 These are producer/install/OTA admission data, not runtime lifecycle receipts.
 `rom/<id>/esu.cpio`, `esu.stage.cpio`, ROM schema and EFI wire bytes stay unchanged.
-
-Gobbl's shared `takeover-contract` owns archive admission for installation and
-OTA. Its read-only host command exercises the same boundary:
-
-```sh
-# From ../gobbl; the last argument selects the exact native initializer bytes.
-cargo run --release --locked -p takeover-contract --bin takeover-validate -- \
-  /path/to/takeover.cpio.lz4 android16-6.12-6 aarch64 \
-  /path/to/releases/android16-6.12-6/aarch64
-```
 
 ## Checks and qualification boundaries
 

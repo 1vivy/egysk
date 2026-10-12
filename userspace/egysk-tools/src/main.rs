@@ -140,10 +140,7 @@ fn member(path: &str) -> Result<()> {
     );
     let root = path.split('/').next().unwrap();
     ensure!(
-        !matches!(
-            root,
-            "init" | "ksu_config" | "ksuinit" | "esuinit" | LOADER | RECEIPT
-        ),
+        !matches!(root, "init" | LOADER | RECEIPT),
         "bootstrap payload claims reserved archive entry: {path}"
     );
     ensure!(

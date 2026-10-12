@@ -8,7 +8,6 @@ mod gpt;
 pub mod scripts;
 pub mod storage;
 pub mod store;
-pub mod transition;
 
 use anyhow::{Result, ensure};
 use context::*;
