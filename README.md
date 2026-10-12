@@ -23,9 +23,10 @@ ROM2 normal boot, fastbootd, cross-ROM credentials and OTA remain separate proof
 
 - This repository owns pinned Magisk, narrow upstream integration patches,
   owned native adapters, the ESP/Unix storage adapter and `egysk-build-cpio`.
-- `egysk-modules` owns conventional platform modules, including `lkm-loader`,
-  `gobbl-runtime`, partition projection, credentials, OTA and the boot-control HAL.
-- `egysk-lkms` owns independent thin, partition-projection, efivarfs and
+- `maos` owns conventional platform modules, including partition projection,
+  OTA and AVB. The credential runtime and the boot-control HAL live in
+  `maos-hals`; `modules/lkm-loader` is owned here with the other native logic.
+- `maos-lkms` owns independent thin, partition-projection, efivarfs and
   efivar_store modules and their exact-KMI producers.
 
 `egyskinit` is the patched **Magiskinit** binary, not another initializer.
@@ -36,7 +37,7 @@ execution and magic mount. The Rust `egysk-runtime` crate is only the linked
 ESP/Unix storage adapter; it is not a process or stage manager.
 
 The core origin is `https://github.com/1vivy/egysk.git`; private sibling origins
-are `1vivy/egysk-modules` and `1vivy/egysk-lkms`. Product paths, sockets, services
+are `1vivy/maos` and `1vivy/maos-lkms`. Product paths, sockets, services
 and SELinux identities are distinct from ordinary user root installations.
 Egysk does not claim their `su` entrypoint, forward SU requests, negotiate root
 providers or ship a Manager. Retained upstream authorization is not stripped
@@ -114,7 +115,7 @@ and AVC review are distinct from enforcing qualification.
 ```text
 /dev/esp                         one raw RW ESP, nosuid,nodev,noexec
 /dev/esp/egysk/                  shared config, binaries, modules, release sets
-/dev/esp/esu/                    independent schema-2 ROM configuration
+/dev/esp/rom/<id>/                per-ROM records: rom.toml, payloads and images
 /dev/egysk/bin/                  executable tmpfs tools
 /dev/egysk/store/                physical-metadata product subtree
 /dev/egysk/lowers/               read-only boot-local Unix module baselines
@@ -164,7 +165,7 @@ exceed crt0's small libc subset, and r30 libc embeds conflicting Rust std symbol
 `out/native/<abi>/bin` supplies `egyskinit`, `egyskd`, `magiskpolicy`,
 `init-ld` and installer utilities. Static BusyBox is a separate explicit input.
 The same core binaries can be packaged with independently admitted LKM sets for
-multiple KMIs. Kernel source, DDK and module build recipes live in `egysk-lkms`,
+multiple KMIs. Kernel source, DDK and module build recipes live in `maos-lkms`,
 not in the core build.
 
 ## Host archive builder
@@ -190,7 +191,7 @@ exactly one generation for the architecture.
 hashes/sizes/modes. It excludes itself and has no package build ID. The platform
 packager owns the separate immutable product `build-id` and schema-2 `set.json`.
 These are producer/install/OTA admission data, not runtime lifecycle receipts.
-`rom/<id>/esu.cpio`, `esu.stage.cpio`, ROM schema and EFI wire bytes stay unchanged.
+`rom/<id>/egysk.cpio`, `egysk.stage.cpio` and the EFI wire bytes stay unchanged.
 
 ## Checks and qualification boundaries
 
@@ -208,7 +209,7 @@ removed helper/runtime implementation, not the replacement.
 Platform obligations are unchanged: peer installation identity and GSI/DSU
 credential ownership; no automatic namespace adoption or recycling; stock
 Gatekeeper scheduling; independent Partformer ABI6 and LVM ownership; native
-EFI semantics and exact partition identity. See `egysk-modules` for those
+EFI semantics and exact partition identity. See `maos` for those
 contracts. The planning assumption remains 16 Weaver slots for five Android
 installations, roughly three each—not measured capacity or a quota. Organic
 exhaustion remains Android/backend behavior and must not be masked.

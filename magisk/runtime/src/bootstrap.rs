@@ -41,7 +41,7 @@ struct BackingResult {
     owned_mounts: Vec<PathBuf>,
 }
 /// Helper CLI (all arguments literal, no shell):
-/// `gobbl-runtime prepare-backing --kind block|filesystem
+/// `maos-credentials prepare-backing --kind block|filesystem
 /// (--source ABS | --partition NAME) --fs-type TYPE --mount-at ABS
 /// --store /dev/egysk/store [args...]`.
 /// stdout: JSON `{ "owned_mounts": ["/actual/owned/mount", "/dev/egysk/store"] }`.

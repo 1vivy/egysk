@@ -6,15 +6,15 @@ fn config() -> BootstrapConfig {
     parse_bootstrap_config(
         r#"
 kmi = "android16-6.12-202509"
-tools = ["gobbl-platform"]
+tools = ["maos-platform"]
 [backing]
 kind = "block"
 source = "/dev/block/by-name/metadata"
 fs_type = "f2fs"
 mount_at = "/dev/egysk/metadata"
-helper = "gobbl-runtime"
+helper = "maos-credentials"
 [phases]
-rdinit = ["identity", "storage", "projection"]
+rdinit = ["identity", "storage", "provide", "avb", "projection"]
 "#,
     )
     .unwrap()
@@ -30,7 +30,7 @@ fn producer_only_kernel_selection_is_not_a_runtime_contract() {
         source = "/metadata"
         fs_type = "f2fs"
         mount_at = "/dev/egysk/metadata"
-        helper = "gobbl-runtime"
+        helper = "maos-credentials"
     "#;
     let config = parse_bootstrap_config(text).unwrap();
     let saved = serde_json::to_string(&config).unwrap();
