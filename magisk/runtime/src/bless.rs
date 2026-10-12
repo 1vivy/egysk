@@ -1,28 +1,24 @@
 //! Automatic boot assessment: blessing the counted entry a boot launched.
 //!
 //! Surfacer (the UEFI boot manager) counts a BLS type-1 entry by renaming its
-//! file to `<id>+<left>[-<done>].conf` right before launching it and publishes
-//! the renamed ESP path in the volatile Boot Loader Interface variable
-//! `LoaderBootCountPath`. Once that boot is judged successful, userspace blesses
-//! the attempt by renaming the file to its uncounted `<id>.conf` name, so its
-//! tries start over. Without a bless, every counted entry eventually exhausts
-//! and Surfacer stops selecting it automatically.
+//! file to `<id>+<left>[-<done>].conf` right before launching it. For a counted
+//! Android launch it passes that file's ESP-root path to the kernel through the
+//! bootconfig key `androidboot.surfacer.boot_count_path`, which Android exposes
+//! as the property `ro.boot.surfacer.boot_count_path`; the same path also goes
+//! to EFI-stage readers as the volatile Boot Loader Interface variable
+//! `LoaderBootCountPath`. Direct-mode Android has no efivars, so the daemon
+//! blesses from the property. Once the boot is judged successful, blessing
+//! renames the file to its uncounted `<id>.conf` name, so its tries start over;
+//! without a bless every counted entry eventually exhausts and Surfacer stops
+//! selecting it automatically.
 //!
-//! Blessing only ever renames the one file the variable names, durably. An
-//! absent variable (no counted launch this boot, or no EFI variable store), a
-//! value that names no counted entry, and a file that another bootstrap already
-//! blessed are all no-ops, so blessing twice is harmless.
+//! Blessing only ever renames the one file the path names, durably. An absent
+//! (empty) path, a path that names no counted entry, and a file another
+//! bootstrap already blessed are all no-ops, so blessing twice is harmless.
 use crate::{context::ESP, fsutil as fsu};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// Boot Loader Interface variable naming the counted entry file of this boot.
-pub const BOOT_COUNT_VARIABLE: &str = "LoaderBootCountPath";
-/// The Boot Loader Interface vendor GUID `4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`.
-const BOOT_LOADER_INTERFACE_GUID: &str = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-/// Runtime EFI variable store, restored by [`crate::bootstrap::restore_efivarfs`].
-const EFIVARS: &str = "/sys/firmware/efi/efivars";
 
 /// The counted entry file a boot count path names and the uncounted name
 /// blessing renames it to; both are relative to the ESP root.
@@ -32,46 +28,14 @@ pub struct Blessing {
     pub blessed: PathBuf,
 }
 
-/// The efivarfs file holding this boot's counted entry path.
-fn boot_count_efivar() -> PathBuf {
-    Path::new(EFIVARS).join(format!(
-        "{BOOT_COUNT_VARIABLE}-{BOOT_LOADER_INTERFACE_GUID}"
-    ))
-}
-
-/// Text of an efivars value: a 4-byte attribute word, then NUL-terminated
-/// UTF-16LE. The variable is volatile, so a value present during this boot names
-/// a launch of this boot; its attribute bits are therefore not re-inspected.
-///
-/// `None` is an empty value, which names no file.
-fn variable_text(bytes: &[u8]) -> Result<Option<String>> {
-    let data = bytes
-        .get(4..)
-        .context("boot count value is shorter than its attribute word")?;
-    if data.is_empty() {
-        return Ok(None);
-    }
-    ensure!(data.len() % 2 == 0, "boot count value is not UTF-16 units");
-    let units = data
-        .chunks(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-        .collect::<Vec<_>>();
-    let length = units
-        .iter()
-        .position(|unit| *unit == 0)
-        .context("boot count value is not NUL-terminated")?;
-    let text = String::from_utf16(&units[..length]).context("boot count value is not UTF-16")?;
-    Ok((!text.is_empty()).then_some(text))
-}
-
 /// The ESP-relative file a boot count path names.
 ///
-/// The loader's own form is absolute from the ESP root with `\` separators
-/// (`\loader\entries\<id>+<left>[-<done>].conf`); `/` is accepted as a separator
-/// too. `None` for anything that is not one file inside the ESP: an empty value,
-/// a `:` drive/stream separator, a control character, or an empty, `.` or `..`
-/// component. A path that is merely not a counted entry is rejected later by
-/// [`blessed_name`].
+/// The bootconfig value is absolute from the ESP root with `/` separators
+/// (`/loader/entries/<id>+<left>[-<done>].conf`); the EFI-stage form with `\`
+/// separators is accepted too. `None` for anything that is not one file inside
+/// the ESP: an empty value, a `:` drive/stream separator, a control character,
+/// or an empty, `.` or `..` component. A path that is merely not a counted entry
+/// is rejected later by [`blessed_name`].
 fn esp_file(value: &str) -> Option<PathBuf> {
     let relative = value.trim_start_matches(['\\', '/']);
     let parts = relative.split(['\\', '/']).collect::<Vec<_>>();
@@ -119,16 +83,16 @@ fn decimal(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Decide the blessing of one boot count value, without touching a filesystem.
+/// Decide the blessing of one boot count path, without touching a filesystem.
 ///
-/// `Ok(None)` is the no-op case: the value names no counted entry to bless. An
-/// `Err` is a value that cannot be a path at all, which is corruption rather
-/// than a legitimately uncounted launch.
-pub fn blessing(bytes: &[u8]) -> Result<Option<Blessing>> {
-    let Some(value) = variable_text(bytes)? else {
+/// `Ok(None)` is the no-op case: an absent (empty) path, or one that names no
+/// counted entry to bless. An `Err` is a path that cannot be one file inside the
+/// ESP at all, which is corruption rather than a legitimately uncounted launch.
+pub fn blessing(value: &str) -> Result<Option<Blessing>> {
+    if value.is_empty() {
         return Ok(None);
-    };
-    let Some(counted) = esp_file(&value) else {
+    }
+    let Some(counted) = esp_file(value) else {
         bail!("boot count path is not an ESP path: {value:?}");
     };
     let Some(name) = counted
@@ -144,18 +108,14 @@ pub fn blessing(bytes: &[u8]) -> Result<Option<Blessing>> {
     }))
 }
 
-/// Bless the counted entry this boot launched, if any, and return its blessed
-/// path.
+/// Bless the counted entry a boot launched from its boot count path, and return
+/// the blessed path.
 ///
-/// A missing variable, a value naming no counted entry, and an already blessed
-/// (gone) file are no-ops; nothing but the one named file is ever renamed.
-pub fn bless_loaded_entry() -> Result<Option<PathBuf>> {
-    let variable = boot_count_efivar();
-    let bytes = match fs::read(&variable) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        bytes => bytes.with_context(|| format!("read {}", variable.display()))?,
-    };
-    let Some(Blessing { counted, blessed }) = blessing(&bytes)? else {
+/// An absent (empty) path, a path naming no counted entry, and an already
+/// blessed (gone) file are no-ops; nothing but the one named file is ever
+/// renamed. The rename is durable: both directories are fsynced.
+pub fn bless_counted_entry(value: &str) -> Result<Option<PathBuf>> {
+    let Some(Blessing { counted, blessed }) = blessing(value)? else {
         return Ok(None);
     };
     ensure!(
@@ -181,19 +141,11 @@ pub fn bless_loaded_entry() -> Result<Option<PathBuf>> {
 mod tests {
     use super::*;
 
-    /// A volatile Boot Loader Interface value: attribute word then NUL-terminated
-    /// UTF-16LE text, exactly as efivarfs exposes it.
-    fn value(text: &str) -> Vec<u8> {
-        let mut bytes = vec![6, 0, 0, 0]; // BOOTSERVICE_ACCESS | RUNTIME_ACCESS
-        bytes.extend(text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
-        bytes
-    }
-
     fn relative(parts: &[&str]) -> PathBuf {
         parts.iter().collect()
     }
 
-    /// The whole pure decision: decode the variable, map the counted entry name to
+    /// The whole pure decision: map the boot count path to the counted file and
     /// its blessed name, and no-op wherever nothing is blessable.
     #[test]
     fn boot_count_path_decides_the_blessed_entry() {
@@ -206,67 +158,51 @@ mod tests {
         // A counted launch blesses that one entry, in its own directory, with the
         // counter dropped from the name and the rest of the name kept as written.
         assert_eq!(
-            blessing(&value(r"\loader\entries\android-direct+2-1.conf")).unwrap(),
+            blessing("/loader/entries/android-direct+2-1.conf").unwrap(),
             counted("android-direct+2-1.conf", "android-direct.conf")
         );
         assert_eq!(
-            blessing(&value(r"\loader\entries\Android-Direct+3.conf")).unwrap(),
+            blessing("/loader/entries/Android-Direct+3.conf").unwrap(),
             counted("Android-Direct+3.conf", "Android-Direct.conf")
         );
         assert_eq!(
-            blessing(&value(r"\loader\entries\rom1\android-direct+0-4.conf")).unwrap(),
+            blessing("/loader/entries/rom1/android-direct+0-4.conf").unwrap(),
             Some(Blessing {
                 counted: relative(&["loader", "entries", "rom1", "android-direct+0-4.conf"]),
                 blessed: relative(&["loader", "entries", "rom1", "android-direct.conf"]),
             })
         );
-        // The value is ESP-absolute; an implied leading separator is accepted too.
+        // The EFI-stage form of the same path is accepted too.
         assert_eq!(
-            blessing(&value("loader/entries/android-direct+1-1.conf")).unwrap(),
+            blessing(r"\loader\entries\android-direct+1-1.conf").unwrap(),
             counted("android-direct+1-1.conf", "android-direct.conf")
         );
-        // Nothing to bless: no counted launch this boot, an empty value, and names
-        // outside the boot assessment scheme (including an already blessed entry).
+        // Nothing to bless: no counted launch this boot (an absent bootconfig key
+        // arrives empty), and names outside the boot assessment scheme,
+        // including an already blessed entry.
+        assert_eq!(blessing("").unwrap(), None);
         for none in [
-            r"\loader\entries\android-direct.conf",
-            r"\loader\entries\Android-Direct.conf",
-            r"\loader\entries\android-direct+x.conf",
-            r"\loader\entries\android-direct+2-.conf",
-            r"\loader\entries\android-direct+2-1.name.conf",
-            r"\loader\entries\android-direct+2-1.txt",
-            r"\loader\entries",
+            "/loader/entries/android-direct.conf",
+            "/loader/entries/Android-Direct.conf",
+            "/loader/entries/android-direct+x.conf",
+            "/loader/entries/android-direct+2-.conf",
+            "/loader/entries/android-direct+2-1.name.conf",
+            "/loader/entries/android-direct+2-1.txt",
+            "/loader/entries",
         ] {
-            assert_eq!(blessing(&value(none)).unwrap(), None, "{none}");
+            assert_eq!(blessing(none).unwrap(), None, "{none}");
         }
-        assert_eq!(blessing(&value("")).unwrap(), None);
-        // The attribute word is not text, and units after the terminator are not
-        // path data: this is still exactly one counted entry.
-        let mut padded = value(r"\loader\entries\android-direct+2-1.conf");
-        padded.extend([b'j', 0, b'u', 0, b'n', 0, b'k', 0]);
-        assert_eq!(
-            blessing(&padded).unwrap(),
-            counted("android-direct+2-1.conf", "android-direct.conf")
-        );
-        assert_eq!(blessing(&[6, 0, 0, 0]).unwrap(), None);
-        // A value shorter than its attribute word, an odd byte count and a value
-        // without a terminator are corruption, not an uncounted launch.
-        for malformed in [
-            vec![],
-            vec![6, 0, 0],
-            vec![6, 0, 0, 0, b'a'],
-            vec![6, 0, 0, 0, b'a', 0],
-        ] {
-            assert!(blessing(&malformed).is_err(), "{malformed:?}");
-        }
-        // So is a value that is not one file inside the ESP.
+        // A path that is not one file inside the ESP is corruption, not a bless.
         for escaped in [
-            r"..\..\loader\entries\android-direct+2-1.conf",
-            r"\loader\\entries\android-direct+2-1.conf",
-            r"\loader\entries\..\..\android-direct+2-1.conf",
-            r"C:\loader\entries\android-direct+2-1.conf",
-            r"\\",
+            "/../../loader/entries/android-direct+2-1.conf",
+            "/loader//entries/android-direct+2-1.conf",
+            "/loader/entries/../../android-direct+2-1.conf",
+            "/loader/entries/./android-direct+2-1.conf",
+            "/",
+            "C:/loader/entries/android-direct+2-1.conf",
+            "/loader/entries/\u{7}android-direct+2-1.conf",
         ] {
-            assert!(blessing(&value(escaped)).is_err(), "{escaped}");
+            assert!(blessing(escaped).is_err(), "{escaped}");
         }
     }
 }
