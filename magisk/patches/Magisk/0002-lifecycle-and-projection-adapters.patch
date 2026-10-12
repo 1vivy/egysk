@@ -136,7 +136,7 @@ diff --git a/native/src/core/bootstages.rs b/native/src/core/bootstages.rs
      fn boot_complete(&self) {
 -        setup_logfile();
          info!("** boot-complete triggered");
-@@ -193,21 +175,51 @@
+@@ -193,21 +175,54 @@
              secure_dir.mkdir(0o700).log_ok();
          }
  
@@ -146,6 +146,9 @@ diff --git a/native/src/core/bootstages.rs b/native/src/core/bootstages.rs
 +        if let Some(modules) = self.module_list.get() {
 +            product_events::hooks("boot-completed", modules);
 +        }
++        // A boot that reached completion succeeded: bless the counted entry
++        // Surfacer launched, so its tries start over on the next selection.
++        product_events::bless_boot();
          if self.zygisk_enabled.load(Ordering::Relaxed) {
              self.zygisk.lock().reset(true);
          }

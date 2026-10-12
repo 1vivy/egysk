@@ -48,3 +48,24 @@ pub fn product_script_env() {
         });
     }
 }
+
+/// A completed boot blesses the counted entry this boot launched (systemd
+/// automatic boot assessment): the volatile `LoaderBootCountPath` variable names
+/// the file Surfacer renamed right before launching it, and this point is only
+/// reached once Android's `sys.boot_completed=1` ran every module hook.
+///
+/// Only the direct descriptor (filesystem backing adopted from stock init, with
+/// no managed ROM projection) leaves blessing to egysk; a managed ROM's own
+/// userspace blesses the entries it counted. Blessing is an idempotent rename of
+/// that one file, so a case both visit is harmless, and a failure is logged
+/// rather than fatal: the boot did succeed.
+pub fn bless_boot() {
+    if STORAGE.config.backing.kind != "filesystem" {
+        return;
+    }
+    match egysk_runtime::bless::bless_loaded_entry() {
+        Ok(None) => {}
+        Ok(Some(path)) => base::info!("** blessed boot entry: {}", path.display()),
+        Err(error) => base::error!("bless counted boot entry: {error:#}"),
+    }
+}

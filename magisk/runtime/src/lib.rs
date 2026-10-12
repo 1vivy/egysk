@@ -1,5 +1,6 @@
 //! Storage adapters linked into patched Magiskinit and Magisk's native daemon.
 //! Lifecycle, inventory, init RC, policy and projection belong to Magisk.
+pub mod bless;
 pub mod bootlog;
 pub mod bootstrap;
 pub mod context;
