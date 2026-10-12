@@ -539,7 +539,7 @@ fn build(args: &Args) -> Result<()> {
         .with_context(|| format!("payload {name}"))?;
         ensure!(input.mode == 0o755, "{name} must be executable");
     }
-    for name in ["module.prop", "pid1.sh", "modules.load"] {
+    for name in ["module.prop", "pid1.sh", "kmod/modules.load"] {
         ensure!(
             files.contains_key(&format!("egysk/modules/lkm-loader/{name}")),
             "bootstrap requires lkm-loader/{name}"
