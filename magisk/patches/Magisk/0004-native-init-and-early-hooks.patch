@@ -50,7 +50,7 @@ diff --git a/native/src/init/Cargo.toml b/native/src/init/Cargo.toml
  cxx-gen = { workspace = true }
  
  [dependencies]
-+egysk-runtime = { path = "../../../../../userspace/egysk-runtime" }
++egysk-runtime = { path = "../../../../../magisk/runtime" }
  base = { workspace = true }
  magiskpolicy = { workspace = true, features = ["no-main"] }
  cxx = { workspace = true }

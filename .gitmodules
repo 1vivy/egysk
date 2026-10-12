@@ -1,3 +1,3 @@
-[submodule "vendor/Magisk"]
-	path = vendor/Magisk
+[submodule "magisk/vendor/Magisk"]
+	path = magisk/vendor/Magisk
 	url = https://github.com/topjohnwu/Magisk.git

@@ -36,7 +36,7 @@ jobs:
         run: |
           RELEASE_DIR=$(mktemp -d "$RUNNER_TEMP/core-artifacts.XXXXXXXX")
           echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
-          python3 scripts/magisk.py --output "$GITHUB_WORKSPACE/out/Magisk-ci" build \
+          python3 magisk/scripts/magisk.py --output "$GITHUB_WORKSPACE/out/Magisk-ci" build \
             --ndk "$ONDK" --static-ndk "$STATIC_NDK" --abi "$ABI" --artifacts "$RELEASE_DIR/native"
       - uses: actions/upload-artifact@v7
         with:

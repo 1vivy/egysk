@@ -19,10 +19,10 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 PIN = "e8915d9db15f5aae93973ffe65068e34df375a6a"
-ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "vendor/Magisk"
-PATCHES = ROOT / "patches/Magisk"
-PRODUCT = ROOT / "product"
+ROOT = Path(__file__).resolve().parents[2]
+VENDOR = ROOT / "magisk/vendor/Magisk"
+PATCHES = ROOT / "magisk/patches/Magisk"
+PRODUCT = ROOT / "magisk/product"
 DEFAULT_OUTPUT = ROOT / "out/Magisk"
 HUNK = re.compile(rb"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)\n$")
 
@@ -137,7 +137,7 @@ def install_product(tree: Path) -> set[str]:
     values = json.loads((PRODUCT / "identity.json").read_text())
     if values.get("EGYSK_PRODUCT") is not True:
         raise ValueError("owned native sources require EGYSK_PRODUCT")
-    rust = "//! Generated from product/identity.json by scripts/magisk.py.\n"
+    rust = "//! Generated from magisk/product/identity.json by magisk/scripts/magisk.py.\n"
     rust += "".join(
         f"pub const {key}: {'bool' if isinstance(value, bool) else '&str'} = {json.dumps(value)};\n"
         for key, value in values.items()
@@ -148,7 +148,7 @@ def install_product(tree: Path) -> set[str]:
         "INTLROOT": "INTERNAL_DIR", "SEPOL_PROC_DOMAIN": "SEPOL_PROC_DOMAIN",
         "SEPOL_FILE_TYPE": "SEPOL_FILE_TYPE", "EGYSK_PRODUCT": "EGYSK_PRODUCT",
     }
-    cpp = "// Generated from product/identity.json by scripts/magisk.py.\n#pragma once\n"
+    cpp = "// Generated from magisk/product/identity.json by magisk/scripts/magisk.py.\n#pragma once\n"
     cpp += "".join(
         f"#define {key} {int(values[value]) if isinstance(values[value], bool) else json.dumps(values[value])}\n"
         for key, value in mapping.items()
@@ -165,9 +165,9 @@ def install_product(tree: Path) -> set[str]:
 
 def materialize(output: Path, check: bool, dependencies: bool) -> None:
     if git_bytes("rev-parse", "HEAD").decode().strip() != PIN:
-        raise ValueError(f"vendor/Magisk must be pinned at {PIN}")
+        raise ValueError(f"magisk/vendor/Magisk must be pinned at {PIN}")
     if git_bytes("status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"):
-        raise ValueError("vendor/Magisk has tracked modifications")
+        raise ValueError("magisk/vendor/Magisk has tracked modifications")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".magisk-", dir=output.parent) as temp:
         tree = Path(temp) / "source"

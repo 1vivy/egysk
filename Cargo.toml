@@ -1,14 +1,16 @@
 [workspace]
 members = [
-    "userspace/egysk-tools",
-    "userspace/egysk-runtime",
+    "magisk/runtime",
+    "modules/lkm-loader",
+    "tools/egysk-tools",
 ]
 default-members = [
-    "userspace/egysk-tools",
-    "userspace/egysk-runtime",
+    "magisk/runtime",
+    "modules/lkm-loader",
+    "tools/egysk-tools",
 ]
 resolver = "3"
-exclude = ["out", "vendor"]
+exclude = ["out", "magisk/vendor"]
 
 [workspace.package]
 edition = "2024"

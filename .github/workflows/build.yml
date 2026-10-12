@@ -3,10 +3,10 @@ name: Build
 on:
   push:
     branches: [main, dev, ci]
-    paths: ['.github/**', 'userspace/**', 'product/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
+    paths: ['.github/**', 'magisk/**', 'modules/**', 'tools/**', 'Cargo.toml', 'Cargo.lock']
   pull_request:
     branches: [main, dev]
-    paths: ['.github/**', 'userspace/**', 'product/**', 'scripts/**', 'patches/**', 'vendor/Magisk', 'Cargo.toml', 'Cargo.lock']
+    paths: ['.github/**', 'magisk/**', 'modules/**', 'tools/**', 'Cargo.toml', 'Cargo.lock']
   workflow_call:
 
 permissions:

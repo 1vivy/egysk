@@ -1,10 +1,10 @@
-# Pristine vendor/Magisk: e8915d9db15f5aae93973ffe65068e34df375a6a
-# scripts/magisk.py applies exact hunk positions and bytes, never fuzz/offset.
+# Pristine magisk/vendor/Magisk: e8915d9db15f5aae93973ffe65068e34df375a6a
+# magisk/scripts/magisk.py applies exact hunk positions and bytes, never fuzz/offset.
 # Native-only product: upstream SU authorization is retained, not bypassed.
 # Patched Magiskinit and MagiskD own the entire native lifecycle.
 # egysk-runtime supplies only ESP/Unix backing and early filesystem adapters.
 # Selected additive-boundary design: pristine upstream stays untouched; owned
-# product/ inputs are installed by scripts/magisk.py, never mockup userspace.
+# magisk/product inputs are installed by magisk/scripts/magisk.py, never mockup userspace.
 # The resolved native Cargo.lock graph is exact patch authority; native Rust and
 # elf-cleaner builds require --locked and must leave tracked sources unchanged.
 0001-product-selection-and-identity.patch

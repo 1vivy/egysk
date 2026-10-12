@@ -7,14 +7,18 @@ on:
       - 'dev'
     paths:
       - '.github/workflows/rustfmt.yml'
-      - 'userspace/**'
+      - 'magisk/**'
+      - 'modules/**'
+      - 'tools/**'
   pull_request:
     branches:
       - 'main'
       - 'dev'
     paths:
       - '.github/workflows/rustfmt.yml'
-      - 'userspace/**'
+      - 'magisk/**'
+      - 'modules/**'
+      - 'tools/**'
 
 permissions:
   checks: write

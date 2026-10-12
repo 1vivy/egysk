@@ -25,13 +25,13 @@ jobs:
       - name: Provision pinned upstream ONDK
         run: |
           mkdir -p "$ANDROID_HOME/ndk"
-          python3 vendor/Magisk/build.py ndk
+          python3 magisk/vendor/Magisk/build.py ndk
       - name: Materialize exact product patches
-        run: python3 scripts/magisk.py materialize --init-dependencies
+        run: python3 magisk/scripts/magisk.py materialize --init-dependencies
       - name: Build native initializer, daemon and policy tool
-        run: python3 scripts/magisk.py build --ndk "$ANDROID_HOME/ndk/magisk" --static-ndk '${{ steps.static-ndk.outputs.ndk-path }}' --abi '${{ inputs.abi }}'
+        run: python3 magisk/scripts/magisk.py build --ndk "$ANDROID_HOME/ndk/magisk" --static-ndk '${{ steps.static-ndk.outputs.ndk-path }}' --abi '${{ inputs.abi }}'
       - name: Check source materialization remains exact
-        run: python3 scripts/magisk.py materialize --check
+        run: python3 magisk/scripts/magisk.py materialize --check
       - uses: actions/upload-artifact@v7
         with:
           name: egysk-native-${{ inputs.abi }}

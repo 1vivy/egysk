@@ -146,15 +146,15 @@ Module removal must never traverse credential siblings.
 ## Native build and upstream rebases
 
 Magisk is pinned at `e8915d9db15f5aae93973ffe65068e34df375a6a` in
-`vendor/Magisk`. `patches/Magisk/series` is the modification authority.
-`scripts/magisk.py` rejects patch fuzz, offsets and source drift and materializes
+`magisk/vendor/Magisk`. `magisk/patches/Magisk/series` is the modification authority.
+`magisk/scripts/magisk.py` rejects patch fuzz, offsets and source drift and materializes
 an `out/<tree>` build. Product logic lives in owned sources; patch hunks expose
 integration points rather than growing another implementation inside upstream.
-`product/identity.json` supplies native identity constants.
+`magisk/product/identity.json` supplies native identity constants.
 
 ```sh
 git submodule update --init --recursive
-python3 scripts/magisk.py --output out/Magisk build \
+python3 magisk/scripts/magisk.py --output out/Magisk build \
   --ndk /path/to/ondk-r30.1 --static-ndk /path/to/android-ndk-r29 --abi arm64-v8a
 ```
 
@@ -178,10 +178,13 @@ target/release/egysk-build-cpio --build-cpio --legacy-lz4 \
 ```
 
 The builder consumes explicit inputs and downloads nothing. Bootstrap supplies
-`egysk.toml`, native companions, the conventional `lkm-loader` module with its
-objects and producer compatibility receipts, and independent early tools. It
-never supplies stock `/init`, a second Magiskinit or the retired kernel helper.
-A branch-only KMI must resolve to exactly one generation for the architecture.
+`egysk.toml`, native companions, the module objects with their producer
+compatibility receipts, and independent early tools. It never supplies stock
+`/init`, a second Magiskinit or the retired kernel helper. The owned PID 1
+loader module lives in `modules/lkm-loader`: `pid1.sh` loads the stock vendor
+modules, then the ordered `kmod/modules.load` payload list the platform packager
+writes from the seed's critical modules. A branch-only KMI must resolve to
+exactly one generation for the architecture.
 
 `egysk-build.json` inventories architecture, exact KMI, entry and member
 hashes/sizes/modes. It excludes itself and has no package build ID. The platform
