@@ -226,18 +226,25 @@ the persisted USB preference. USB enumeration, root/no-auth adb and the module
 policy require device proof; successful Android boot alone does not prove them.
 
 One command builds the native core, own LKM-loader, host archive builder and a
-fresh direct ESP tree (static BusyBox is an explicit independently supplied input):
+fresh direct ESP tree. A static aarch64 BusyBox is an explicit input. No recipe
+builds or fetches it. Set `ANDROID_NDK_HOME` to the Android NDK r29 root before
+you run the recipe:
 
 ```sh
-just build_direct /path/to/ondk-r30.1 /path/to/android-ndk-r29 \
-  /path/to/static-aarch64-busybox android16-6.12-6 out/direct-esp
+git submodule update --init --recursive
+just bootstrap
+export ANDROID_NDK_HOME=/path/to/toolchains/android-ndk-r29
+just build_direct /path/to/static-aarch64-busybox android16-6.12-6 out/direct-esp
 ```
 
-The optional sixth argument is `aarch64` (default) or `x86_64`; the seventh is
-the generated native source tree (default `out/Magisk-direct`). As with the
-native producer, use a fresh source-tree path after changing product sources;
-existing generated sources are never silently overwritten. Output must not
-already exist. There are no downloads by the packager or device writes.
+The optional fourth argument is `aarch64` (default) or `x86_64`. The fifth
+argument is the generated native source tree (default `out/Magisk-direct`). The
+sixth argument is the ONDK path (default `out/toolchains/ondk-r30.1`). The
+recipe takes the static NDK from `ANDROID_NDK_HOME`, so the two NDK inputs
+cannot disagree. As with the native producer, use a fresh source-tree path after
+you change product sources. Existing generated sources are never silently
+overwritten. Output must not already exist. The packager downloads nothing and
+writes to no device.
 
 ```text
 out/direct-esp/
@@ -269,24 +276,71 @@ integration points rather than growing another implementation inside upstream.
 
 ```sh
 git submodule update --init --recursive
+just bootstrap
+export ANDROID_NDK_HOME=/path/to/toolchains/android-ndk-r29
+just build_native
+# One ABI only:
 python3 magisk/scripts/magisk.py --output out/Magisk build \
-  --ndk /path/to/ondk-r30.1 --static-ndk /path/to/android-ndk-r29 --abi arm64-v8a
+  --ndk out/toolchains/ondk-r30.1 --static-ndk "$ANDROID_NDK_HOME" --abi x86_64
 ```
 
-The producer uses ONDK's compiler/Rust toolchain and locked dependencies.
-Magiskinit links full static Bionic from NDK r29: early filesystem/process hooks
-exceed crt0's small libc subset, and r30 libc embeds conflicting Rust std symbols.
+`just bootstrap` initializes the pinned Magisk submodules. It then installs
+ONDK r30.1 into `out/toolchains/ondk-r30.1`, which is ignored. The installer
+downloads the release archive once and verifies the pinned SHA-256 digest. A
+second run reports the installed tree and downloads nothing. Set `EGYSK_ONDK` to
+use another ONDK path, or pass the path as the first argument of
+`just build_native`.
+
+`just build_native` takes the ONDK from `EGYSK_ONDK` (default
+`out/toolchains/ondk-r30.1`), takes the static NDK from `ANDROID_NDK_HOME` and
+defaults to the `arm64-v8a` ABI. The producer uses ONDK's compiler/Rust
+toolchain and locked dependencies. Magiskinit links the full static Bionic from
+NDK r29. Early filesystem and process hooks exceed crt0's small libc subset.
+The r30 libc embeds Rust std symbols that conflict with the product.
 `out/native/<abi>/bin` supplies `egyskinit`, `egyskd`, `magiskpolicy`, `init-ld`
-and installer utilities. Static BusyBox is a separate input.
-The same core binaries can be packaged with independently admitted LKM sets for
-multiple KMIs. Kernel source, DDK and module build recipes live in `maos-lkms`,
-not in the core build.
+and installer utilities. Static BusyBox is a separate input. The same core binaries can be
+packaged with independently admitted LKM sets for multiple KMIs. Kernel source,
+DDK and module build recipes live in `maos-lkms`, not in the core build.
+
+`just build_lkm_loader` also requires `ANDROID_NDK_HOME`. The recipe links a
+static API-35 binary and writes it to `out/lkm-loader/<triple>/lkm-loader`.
+
+For a direct Cargo Android target build, generate the local Cargo settings
+first. The generator writes `.cargo/config.toml`, which is not tracked:
+
+```sh
+python3 tools/setup_cargo_config.py --ndk-root /path/to/toolchains/android-ndk-r29
+# or, without the option:
+ANDROID_NDK_HOME=/path/to/toolchains/android-ndk-r29 python3 tools/setup_cargo_config.py --force
+```
+
+The generator requires an NDK with `Pkg.Revision = 29.` and stops with an error
+when the revision, host tag, compiler wrappers, `llvm-ar` or sysroot is absent.
+It configures API 35 wrappers for `aarch64-linux-android` and
+`x86_64-linux-android` and does not write outside the repository.
+
+## Build inputs and outputs
+
+| Input | Source | Used by |
+| --- | --- | --- |
+| Android NDK r29 | `toolchains/android-ndk-r29` (`LEDGER.md`), through `ANDROID_NDK_HOME` or `--ndk-root` | native core, LKM loader, Cargo Android targets |
+| ONDK r30.1 | repo cache `out/toolchains/ondk-r30.1`; `just bootstrap` installs the r30.1 release and verifies the SHA-256 pin in `tools/bootstrap_ondk.py` | native core, direct tree |
+| Pinned Magisk and its submodules | `magisk/vendor/Magisk` at `e8915d9`, `git submodule update --init --recursive` | native core, direct tree |
+| Static Bionic `libc.a` | API-35 sysroot inside NDK r29; the producer checks it | `egyskinit` |
+| Static aarch64 BusyBox | the operator supplies the binary; no recipe builds or fetches it. `build_direct` takes its path as an argument | direct tree |
+| Host Rust toolchain | `cargo` and `rustc` on `PATH` | host archive builder, LKM loader |
+
+The build recipes write below `out/`: `out/Magisk*` holds generated sources,
+`out/toolchains/ondk-r30.1` the bootstrapped ONDK, `out/native/<abi>/bin` the
+Android binaries, `out/lkm-loader/<triple>` the loader, `out/host/release` the
+host builder, and the direct tree goes to the path that you pass. No recipe
+reads `legacy/`, `scratch/` or a sibling checkout.
 
 ## Host archive builder
 
 ```sh
-cargo build --release --locked -p egysk-tools
-target/release/egysk-build-cpio --build-cpio --legacy-lz4 \
+just build_host
+out/host/release/egysk-build-cpio --build-cpio --legacy-lz4 \
   --kmi android16-6.12-6 --arch aarch64 --artifact-dir /path/to/releases \
   --bootstrap-dir /path/to/bootstrap --entry egyskinit \
   --out /path/to/egysk.cpio.lz4

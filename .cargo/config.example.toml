@@ -1,34 +1,35 @@
-# This file contains required configuration to correctly build egyskd across platforms.
-# Rename this file to `config.toml` to apply.
-# Replace all UPPERCASE variables (ANDROID_NDK_ROOT, CLANG_PATH, etc.) with real paths.
-# Or run `python3 tools/setup_cargo_config.py` to generate `.cargo/config.toml` automatically.
+# This file shows the Cargo settings for Android targets.
+# Rename this file to `config.toml` to apply it, or generate that file with
+# `python3 tools/setup_cargo_config.py`. The generator accepts `ANDROID_NDK_HOME`
+# or `--ndk-root`, requires Android NDK r29 and writes API 35 wrappers.
+# Replace all UPPERCASE placeholders with real paths.
 
 # Linux
-# AARCH64_CLANG_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang
-# AARCH64_CLANGXX_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++
-# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -IANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android
-# X86_64_CLANG_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang
-# X86_64_CLANGXX_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang++
-# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -IANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/x86_64-linux-android
-# AR_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+# AARCH64_CLANG_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang
+# AARCH64_CLANGXX_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++
+# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot -IANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android
+# X86_64_CLANG_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang
+# X86_64_CLANGXX_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang++
+# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot -IANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/x86_64-linux-android
+# AR_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
 # macOS
-# AARCH64_CLANG_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang
-# AARCH64_CLANGXX_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang++
-# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -IANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/aarch64-linux-android
-# X86_64_CLANG_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang
-# X86_64_CLANGXX_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang++
-# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -IANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/x86_64-linux-android
-# AR_PATH=ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
+# AARCH64_CLANG_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang
+# AARCH64_CLANGXX_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang++
+# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -IANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/aarch64-linux-android
+# X86_64_CLANG_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android35-clang
+# X86_64_CLANGXX_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android35-clang++
+# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -IANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/x86_64-linux-android
+# AR_PATH=ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
 
 # Windows
-# AARCH64_CLANG_PATH=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android26-clang.cmd
-# AARCH64_CLANGXX_PATH=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android26-clang++.cmd
-# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot -IANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot\\usr\\include\\aarch64-linux-android
-# X86_64_CLANG_PATH=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\x86_64-linux-android26-clang.cmd
-# X86_64_CLANGXX_PATH=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\x86_64-linux-android26-clang++.cmd
-# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot -IANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot\\usr\\include\\x86_64-linux-android
-# AR_PATH=ANDROID_NDK_ROOT\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\llvm-ar.exe
+# AARCH64_CLANG_PATH=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android35-clang.cmd
+# AARCH64_CLANGXX_PATH=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\aarch64-linux-android35-clang++.cmd
+# AARCH64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot -IANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot\\usr\\include\\aarch64-linux-android
+# X86_64_CLANG_PATH=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\x86_64-linux-android35-clang.cmd
+# X86_64_CLANGXX_PATH=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\x86_64-linux-android35-clang++.cmd
+# X86_64_BINDGEN_EXTRA_CLANG_ARGS=--sysroot=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot -IANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\sysroot\\usr\\include\\x86_64-linux-android
+# AR_PATH=ANDROID_NDK_HOME\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\llvm-ar.exe
 
 # Run `cargo build --target aarch64-linux-android` to build.
 
