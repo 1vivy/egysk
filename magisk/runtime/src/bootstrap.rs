@@ -42,11 +42,11 @@ struct BackingResult {
 }
 /// Helper CLI (all arguments literal, no shell):
 /// `maos-credentials prepare-backing --kind block|filesystem
-/// (--source ABS | --partition NAME) --fs-type TYPE --mount-at ABS
+/// [--source ABS | --partition NAME] --fs-type TYPE --mount-at ABS
 /// --store /dev/egysk/store [args...]`.
 /// stdout: JSON `{ "owned_mounts": ["/actual/owned/mount", "/dev/egysk/store"] }`.
 /// Paths are creation order, only newly owned mounts, never Android/vendor mounts.
-/// The helper coordinates an existing Android metadata mount and never formats.
+/// The helper owns the store volume and never formats.
 pub fn prepare_backing(config: &BootstrapConfig) -> Result<Vec<PathBuf>> {
     let backing = &config.backing;
     if backing.kind == "filesystem" {
@@ -76,27 +76,21 @@ pub fn prepare_backing(config: &BootstrapConfig) -> Result<Vec<PathBuf>> {
             "explicit backing source is unavailable: {source}"
         );
         command.args(["--source", source]);
-    } else {
-        command.args([
-            "--partition",
-            backing
-                .partition
-                .as_deref()
-                .context("missing backing selector")?,
-        ]);
+    } else if let Some(partition) = &backing.partition {
+        command.args(["--partition", partition]);
     }
     let mut child = command
         .args(&backing.args)
         .stdin(Stdio::null())
         .stdout(output)
         .spawn()
-        .context("start physical metadata bootstrap")?;
+        .context("start shared store bootstrap")?;
     crate::scripts::wait_until(&mut child, Instant::now() + Duration::from_secs(35), false)
-        .with_context(|| format!("physical metadata bootstrap {} prepare-backing", helper))?;
+        .with_context(|| format!("shared store bootstrap {} prepare-backing", helper))?;
     let result: BackingResult = serde_json::from_str(&fsu::text(&output_path, 4096)?)?;
     ensure!(
         fsu::mounted(Path::new(STORE))?,
-        "helper did not expose metadata store bind"
+        "helper did not expose the module store bind"
     );
     let mut seen = BTreeSet::new();
     for path in &result.owned_mounts {

@@ -155,7 +155,7 @@ providers can independently expose their own `su`.
 /dev/esp/egysk/                  shared config, binaries, modules, release sets
 /dev/esp/rom/<id>/                per-ROM records: rom.toml, payloads and images
 /dev/egysk/bin/                  executable tmpfs tools
-/dev/egysk/store/                physical-metadata product subtree
+/dev/egysk/store/                shared-store product subtree
 /dev/egysk/lowers/               read-only boot-local Unix module baselines
 /dev/egysk/modules/<id>/         effective writable module views
 /dev/egysk/state/<id>/           shared durable module state
@@ -172,7 +172,7 @@ module upper/work trees.
 
 VFAT cannot be an OverlayFS lower. ESP module content is copied to verified,
 read-only tmpfs lowers; only generation-specific upper/work pairs persist on
-physical metadata. `metacopy=on`, `redirect_dir=on`, `index=off`,
+the shared store. `metacopy=on`, `redirect_dir=on`, `index=off`,
 `nfs_export=off`, `xino=off` keep chmod/chown/labels from copying unchanged data.
 Actual content writes still copy data up. Unsupported metacopy fails rather than
 silently filling metadata. This is shared filesystem backing, not a per-ROM
@@ -201,6 +201,19 @@ kind = "filesystem"
 source = "/metadata"
 fs_type = "f2fs"
 mount_at = "/metadata"
+```
+
+A managed maOS seed uses block backing and names the shared store volume through
+the helper selector. It has neither `source` nor `partition`, because the core
+checks a source path before the helper runs:
+
+```toml
+[backing]
+kind = "block"
+fs_type = "ext4"
+mount_at = "/dev/egysk/metadata"
+helper = "maos-credentials"
+args = ["--lv", "rom/store"]
 ```
 
 The existing cpio/package equality check remains mandatory. Native adoption

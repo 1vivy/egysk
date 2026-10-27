@@ -129,17 +129,15 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
 pub fn open_android() -> Result<()> {
     let storage = read()?;
     esp::mount(storage.esp)?;
-    let mut config = storage.config;
-    if config.backing.kind == "block" {
-        esp::node(Path::new(SELECTED_BACKING), storage.backing)?;
-        config.backing.source = Some(SELECTED_BACKING.into());
-        config.backing.partition = None;
-    }
+    // The helper activates and adopts the configured store again. Its volume
+    // selector is not a carried device node: the mapping may be recreated with
+    // a different number across the Android root transition.
+    let config = storage.config;
     bootstrap::prepare_backing(&config)?;
     if config.backing.kind == "block" {
         ensure!(
             fs::metadata(STORE)?.dev() == storage.backing,
-            "metadata backing changed during boot"
+            "shared store changed during boot"
         );
     }
     bootstrap::initialize_store()?;

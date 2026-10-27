@@ -88,6 +88,38 @@ fn producer_only_kernel_selection_is_not_a_runtime_contract() {
 }
 
 #[test]
+fn a_seed_selects_the_store_volume_through_the_helper_selector() {
+    let text = r#"
+        kmi = "android16-6.12-202509"
+        [backing]
+        kind = "block"
+        fs_type = "ext4"
+        mount_at = "/dev/egysk/metadata"
+        helper = "maos-credentials"
+        args = ["--lv", "rom/store"]
+    "#;
+    let seed = parse_bootstrap_config(text).unwrap();
+    assert_eq!(seed.backing.args, ["--lv", "rom/store"]);
+    assert!(seed.backing.source.is_none());
+    assert!(seed.backing.partition.is_none());
+    assert!(seed.clone().for_boot(seed.clone()).is_ok());
+
+    // Exactly one selector: the arguments replace source and partition.
+    let mut both = seed.clone();
+    both.backing.source = Some("/dev/egysk/devices/backing".into());
+    assert!(both.validate().is_err());
+    let mut both = seed.clone();
+    both.backing.partition = Some("store".into());
+    assert!(both.validate().is_err());
+    let mut neither = seed.clone();
+    neither.backing.args.clear();
+    assert!(neither.validate().is_err());
+    let mut empty = seed;
+    empty.backing.args.push(String::new());
+    assert!(empty.validate().is_err());
+}
+
+#[test]
 fn shared_package_cannot_redirect_the_bootstrap_backing() {
     let mut package = config();
     package.backing.source = Some("/dev/block/by-name/other-metadata".into());

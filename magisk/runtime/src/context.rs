@@ -16,7 +16,6 @@ pub const PACKAGE_CONFIG: &str = "/dev/esp/egysk/egysk.toml";
 pub const INDEPENDENT_BIN: &str = "/egysk/bin";
 pub const DEVICE_DIR: &str = "/dev/egysk/devices";
 pub const SELECTED_ESP: &str = "/dev/egysk/devices/esp";
-pub const SELECTED_BACKING: &str = "/dev/egysk/devices/backing";
 pub const RD: &str = "/dev/egysk/rd";
 pub const DAEMON: &str = "egyskd";
 pub const POLICY_TOOL: &str = "magiskpolicy";
@@ -56,9 +55,10 @@ pub const MOUNT_SOURCE: &str = "egysk";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Backing {
-    /// `block` (an explicit physical block node) or `filesystem` (already mounted).
+    /// `block` (a block logical volume) or `filesystem` (already mounted).
     pub kind: String,
-    /// Exactly one source/partition for block; filesystem accepts source only.
+    /// Exactly one selector for block: source, partition, or helper `args`.
+    /// Filesystem accepts source only.
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -68,6 +68,8 @@ pub struct Backing {
     /// Block backing helper; filesystem backing is adopted natively after init.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helper: Option<String>,
+    /// Helper selector arguments. A maOS seed selects the store volume here,
+    /// never through `source`, which the core checks before the helper runs.
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -173,11 +175,20 @@ impl BootstrapConfig {
             "invalid backing kind"
         );
         ensure!(
-            self.backing.source.is_some() != self.backing.partition.is_some(),
-            "backing requires exactly one source or partition"
+            u8::from(self.backing.source.is_some())
+                + u8::from(self.backing.partition.is_some())
+                + u8::from(!self.backing.args.is_empty())
+                == 1,
+            "backing requires exactly one source, partition or helper selector"
         );
         if let Some(source) = &self.backing.source {
             absolute(source)?;
+        }
+        for argument in &self.backing.args {
+            ensure!(
+                !argument.is_empty() && !argument.contains('\0'),
+                "invalid backing helper argument"
+            );
         }
         if let Some(partition) = &self.backing.partition {
             ensure!(
