@@ -291,7 +291,26 @@ second run reports the installed tree and downloads nothing. Set `EGYSK_ONDK` to
 use another ONDK path, or pass the path as the first argument of
 `just build_native`.
 
-`just build_native` takes the ONDK from `EGYSK_ONDK` (default
+CI uses the same inputs. `daemon.yml`, `build-core.yml` and `clippy.yml` run
+`python3 tools/bootstrap_ondk.py` and pass `out/toolchains/ondk-r30.1` to the
+build (`--ndk`, or `ANDROID_NDK_HOME` for the Cargo Android targets). No workflow
+runs `magisk/vendor/Magisk/build.py ndk` or installs ONDK elsewhere, so the CI
+toolchain is the hash-pinned cache that `just bootstrap` installs.
+
+Two jobs keep the upstream NDK r29 acquisition for `--static-ndk` alone:
+`daemon.yml` and the dispatch-only `build-core.yml` take r29 through
+`nttld/setup-ndk`. ONDK cannot serve that argument. The producer admits only an
+NDK whose `Pkg.Revision` is 29, and ONDK r30.1 reports
+`30.0.15729638-beta2` (`out/toolchains/ondk-r30.1/source.properties`). Its
+static `libc.a` also embeds a linked Rust std (`librustlibs.libstd...o`, with
+`___rust_alloc`, `___rust_dealloc` and `_RNv...` symbols, 70 in total), so
+`egyskinit` stops at the link:
+`ld.lld: error: duplicate symbol: rust_eh_personality`, defined both by
+`libmagiskinit-rs.a` and by ONDK's `libc.a`. The r29 `libc.a` carries no Rust
+code. Both jobs name the input explicitly, and `build-core.yml` takes the path as
+a workflow input rather than acquiring it.
+
+`just build_native` takes the ONDK from `EGYSK_ONDK` (default:
 `out/toolchains/ondk-r30.1`), takes the static NDK from `ANDROID_NDK_HOME` and
 defaults to the `arm64-v8a` ABI. The producer uses ONDK's compiler/Rust
 toolchain and locked dependencies. Magiskinit links the full static Bionic from
@@ -323,8 +342,8 @@ It configures API 35 wrappers for `aarch64-linux-android` and
 
 | Input | Source | Used by |
 | --- | --- | --- |
-| Android NDK r29 | `toolchains/android-ndk-r29` (`LEDGER.md`), through `ANDROID_NDK_HOME` or `--ndk-root` | native core, LKM loader, Cargo Android targets |
-| ONDK r30.1 | repo cache `out/toolchains/ondk-r30.1`; `just bootstrap` installs the r30.1 release and verifies the SHA-256 pin in `tools/bootstrap_ondk.py` | native core, direct tree |
+| Android NDK r29 | `toolchains/android-ndk-r29` (`LEDGER.md`), through `ANDROID_NDK_HOME` or `--ndk-root` | static Bionic for `egyskinit` (`--static-ndk`), LKM loader, local Cargo Android targets |
+| ONDK r30.1 | repo cache `out/toolchains/ondk-r30.1`; `just bootstrap` installs the r30.1 release and verifies the SHA-256 pin in `tools/bootstrap_ondk.py` | native core, direct tree, CI Cargo Android targets |
 | Pinned Magisk and its submodules | `magisk/vendor/Magisk` at `e8915d9`, `git submodule update --init --recursive` | native core, direct tree |
 | Static Bionic `libc.a` | API-35 sysroot inside NDK r29; the producer checks it | `egyskinit` |
 | Static aarch64 BusyBox | the operator supplies the binary; no recipe builds or fetches it. `build_direct` takes its path as an argument | direct tree |

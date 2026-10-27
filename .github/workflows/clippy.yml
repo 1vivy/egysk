@@ -33,15 +33,14 @@ jobs:
       
       - uses: Swatinem/rust-cache@v2
 
-      - uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r29
+      - name: Bootstrap hash-pinned ONDK
+        run: python3 tools/bootstrap_ondk.py
 
       - name: Run clippy
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ github.workspace }}/out/toolchains/ondk-r30.1
         run: |
+          export CARGO_TARGET_DIR=out/clippy
           rustup target add aarch64-linux-android
           rustup target add x86_64-linux-android
           source .github/scripts/setup-rust-build.sh aarch64-linux-android 26

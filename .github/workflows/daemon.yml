@@ -12,24 +12,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ANDROID_HOME: ${{ github.workspace }}/.android-sdk
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      # Keep r29 only for --static-ndk. ONDK r30.1's static libc.a embeds a Rust
+      # std (librustlibs), so linking egyskinit fails: duplicate symbol
+      # rust_eh_personality. See README's CI toolchain contract.
       - uses: nttld/setup-ndk@v1
         id: static-ndk
         with:
           ndk-version: r29
-      - name: Provision pinned upstream ONDK
-        run: |
-          mkdir -p "$ANDROID_HOME/ndk"
-          python3 magisk/vendor/Magisk/build.py ndk
+      - name: Bootstrap hash-pinned ONDK
+        run: python3 tools/bootstrap_ondk.py
       - name: Materialize exact product patches
         run: python3 magisk/scripts/magisk.py materialize --init-dependencies
       - name: Build native initializer, daemon and policy tool
-        run: python3 magisk/scripts/magisk.py build --ndk "$ANDROID_HOME/ndk/magisk" --static-ndk '${{ steps.static-ndk.outputs.ndk-path }}' --abi '${{ inputs.abi }}'
+        run: python3 magisk/scripts/magisk.py build --ndk out/toolchains/ondk-r30.1 --static-ndk '${{ steps.static-ndk.outputs.ndk-path }}' --abi '${{ inputs.abi }}'
       - name: Check source materialization remains exact
         run: python3 magisk/scripts/magisk.py materialize --check
       - uses: actions/upload-artifact@v7
