@@ -297,9 +297,10 @@ build (`--ndk`, or `ANDROID_NDK_HOME` for the Cargo Android targets). No workflo
 runs `magisk/vendor/Magisk/build.py ndk` or installs ONDK elsewhere, so the CI
 toolchain is the hash-pinned cache that `just bootstrap` installs.
 
-Two jobs keep the upstream NDK r29 acquisition for `--static-ndk` alone:
-`daemon.yml` and the dispatch-only `build-core.yml` take r29 through
-`nttld/setup-ndk`. ONDK cannot serve that argument. The producer admits only an
+Two jobs keep the upstream NDK r29 for `--static-ndk` alone. `daemon.yml`
+downloads the r29 archive and checks its SHA-256, which matches the size and
+SHA-1 that Google lists for it. The dispatch-only `build-core.yml` takes the
+path as an input. ONDK cannot serve that argument. The producer admits only an
 NDK whose `Pkg.Revision` is 29, and ONDK r30.1 reports
 `30.0.15729638-beta2` (`out/toolchains/ondk-r30.1/source.properties`). Its
 static `libc.a` also embeds a linked Rust std (`librustlibs.libstd...o`, with
@@ -307,8 +308,7 @@ static `libc.a` also embeds a linked Rust std (`librustlibs.libstd...o`, with
 `egyskinit` stops at the link:
 `ld.lld: error: duplicate symbol: rust_eh_personality`, defined both by
 `libmagiskinit-rs.a` and by ONDK's `libc.a`. The r29 `libc.a` carries no Rust
-code. Both jobs name the input explicitly, and `build-core.yml` takes the path as
-a workflow input rather than acquiring it.
+code.
 
 `just build_native` takes the ONDK from `EGYSK_ONDK` (default:
 `out/toolchains/ondk-r30.1`), takes the static NDK from `ANDROID_NDK_HOME` and

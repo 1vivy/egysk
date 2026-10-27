@@ -19,10 +19,16 @@ jobs:
       # Keep r29 only for --static-ndk. ONDK r30.1's static libc.a embeds a Rust
       # std (librustlibs), so linking egyskinit fails: duplicate symbol
       # rust_eh_personality. See README's CI toolchain contract.
-      - uses: nttld/setup-ndk@v1
+      # Google lists the r29 archive at 783549481 bytes with SHA-1
+      # 87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b (android/ndk wiki, Unsupported
+      # Downloads). The SHA-256 below is of that same archive.
+      - name: Install NDK r29 for static Bionic libraries
         id: static-ndk
-        with:
-          ndk-version: r29
+        run: |
+          curl --fail --location --retry 3 https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o "$RUNNER_TEMP/ndk.zip"
+          echo "4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf  $RUNNER_TEMP/ndk.zip" | sha256sum --check --strict
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "ndk-path=$RUNNER_TEMP/android-ndk-r29" >> "$GITHUB_OUTPUT"
       - name: Bootstrap hash-pinned ONDK
         run: python3 tools/bootstrap_ondk.py
       - name: Materialize exact product patches
