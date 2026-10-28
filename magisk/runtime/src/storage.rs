@@ -141,9 +141,9 @@ pub fn open_android() -> Result<()> {
         );
     }
     bootstrap::initialize_store()?;
-    // Legacy lower-cache reclamation is PID1-only. Filesystem backing is first
-    // available here, after stock init has started, so leave those caches alone.
-    // Activation still checks that no effective module views are mounted.
+    // Only PID 1 reclaims on-disk lower caches under store/overlays. Filesystem
+    // backing is first available here, after stock init starts, so keep those
+    // caches. Activation still checks that no effective module views are mounted.
     if config.backing.kind == "filesystem" && !config.safe_mode && storage.mode != BootMode::Charger
     {
         store::activate_pending(storage.mode, &config.backing.mount_at)?;
