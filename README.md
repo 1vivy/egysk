@@ -226,25 +226,26 @@ the persisted USB preference. USB enumeration, root/no-auth adb and the module
 policy require device proof; successful Android boot alone does not prove them.
 
 One command builds the native core, own LKM-loader, host archive builder and a
-fresh direct ESP tree. A static aarch64 BusyBox is an explicit input. No recipe
-builds or fetches it. Set `ANDROID_NDK_HOME` to the Android NDK r29 root before
-you run the recipe:
+fresh direct ESP tree. BusyBox comes from Magisk's own pin: the packager
+downloads `busybox-1.36.1.1.zip` from `topjohnwu/magisk-files`, verifies its
+SHA-256, and takes `<abi>/libbusybox.so`. Set `ANDROID_NDK_HOME` to the Android
+NDK r29 root before you run the recipe:
 
 ```sh
 git submodule update --init --recursive
 just bootstrap
 export ANDROID_NDK_HOME=/path/to/toolchains/android-ndk-r29
-just build_direct /path/to/static-aarch64-busybox android16-6.12-6 out/direct-esp
+just build_direct android16-6.12-6 out/direct-esp
 ```
 
-The optional fourth argument is `aarch64` (default) or `x86_64`. The fifth
+The optional third argument is `aarch64` (default) or `x86_64`. The fourth
 argument is the generated native source tree (default `out/Magisk-direct`). The
-sixth argument is the ONDK path (default `out/toolchains/ondk-r30.1`). The
+fifth argument is the ONDK path (default `out/toolchains/ondk-r30.1`). The
 recipe takes the static NDK from `ANDROID_NDK_HOME`, so the two NDK inputs
 cannot disagree. As with the native producer, use a fresh source-tree path after
 you change product sources. Existing generated sources are never silently
-overwritten. Output must not already exist. The packager downloads nothing and
-writes to no device.
+overwritten. Output must not already exist. The packager writes to no device and
+fetches only that one hash-pinned archive.
 
 ```text
 out/direct-esp/
@@ -317,9 +318,11 @@ toolchain and locked dependencies. Magiskinit links the full static Bionic from
 NDK r29. Early filesystem and process hooks exceed crt0's small libc subset.
 The r30 libc embeds Rust std symbols that conflict with the product.
 `out/native/<abi>/bin` supplies `egyskinit`, `egyskd`, `magiskpolicy`, `init-ld`
-and installer utilities. Static BusyBox is a separate input. The same core binaries can be
-packaged with independently admitted LKM sets for multiple KMIs. Kernel source,
-DDK and module build recipes live in `maos-lkms`, not in the core build.
+and installer utilities. The direct packager adds BusyBox from the pinned Magisk
+archive, so no build produces or copies a BusyBox binary by hand. The same core
+binaries can be packaged with independently admitted LKM sets for multiple KMIs.
+Kernel source, DDK and module build recipes live in `maos-lkms`, not in the core
+build.
 
 `just build_lkm_loader` also requires `ANDROID_NDK_HOME`. The recipe links a
 static API-35 binary and writes it to `out/lkm-loader/<triple>/lkm-loader`.
@@ -346,11 +349,12 @@ It configures API 35 wrappers for `aarch64-linux-android` and
 | ONDK r30.1 | repo cache `out/toolchains/ondk-r30.1`; `just bootstrap` installs the r30.1 release and verifies the SHA-256 pin in `tools/bootstrap_ondk.py` | native core, direct tree, CI Cargo Android targets |
 | Pinned Magisk and its submodules | `magisk/vendor/Magisk` at `e8915d9`, `git submodule update --init --recursive` | native core, direct tree |
 | Static Bionic `libc.a` | API-35 sysroot inside NDK r29; the producer checks it | `egyskinit` |
-| Static aarch64 BusyBox | the operator supplies the binary; no recipe builds or fetches it. `build_direct` takes its path as an argument | direct tree |
+| Static BusyBox | Magisk's pin: `busybox-1.36.1.1.zip` from `topjohnwu/magisk-files`, SHA-256 `b4d0551f…951` in `tools/bootstrap_busybox.py`; cached in `out/cache/busybox/<sha256>` | direct tree (`<abi>/libbusybox.so` as `bin/busybox`) |
 | Host Rust toolchain | `cargo` and `rustc` on `PATH` | host archive builder, LKM loader |
 
 The build recipes write below `out/`: `out/Magisk*` holds generated sources,
-`out/toolchains/ondk-r30.1` the bootstrapped ONDK, `out/native/<abi>/bin` the
+`out/toolchains/ondk-r30.1` the bootstrapped ONDK, `out/cache/busybox/<sha256>`
+the hash-verified BusyBox archive, `out/native/<abi>/bin` the
 Android binaries, `out/lkm-loader/<triple>` the loader, `out/host/release` the
 host builder, and the direct tree goes to the path that you pass. No recipe
 reads `legacy/`, `scratch/` or a sibling checkout.

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Assemble an egysk-only ESP tree from explicit native producer outputs."""
+"""Assemble an egysk-only ESP tree from explicit native producer outputs.
+
+BusyBox is not an input: it comes from Magisk's hash-pinned prebuilt archive
+through tools/bootstrap_busybox.py, for the tree's architecture.
+"""
 from __future__ import annotations
 
 import argparse
@@ -8,11 +12,16 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from bootstrap_busybox import install as install_busybox  # noqa: E402
+
 TOOLS = ("egyskd", "magiskpolicy", "init-ld", "util_functions.sh")
+ABI = {"aarch64": "arm64-v8a", "x86_64": "x86_64"}
 
 
 def copy(source: Path, target: Path, mode: int = 0o755) -> None:
@@ -41,7 +50,9 @@ def package(args: argparse.Namespace) -> None:
         (package_root / "egysk.toml").write_text(config)
         for name in TOOLS:
             copy(args.native_bin / name, package_root / "bin" / name)
-        copy(args.busybox, package_root / "bin/busybox")
+        busybox = work / "busybox"
+        install_busybox(ABI[args.arch], busybox)
+        copy(busybox, package_root / "bin/busybox")
         module = package_root / "modules/lkm-loader"
         for name in ("module.prop", "pid1.sh"):
             copy(ROOT / "modules/lkm-loader" / name, module / name,
@@ -75,7 +86,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-bin", type=Path, required=True)
     parser.add_argument("--loader", type=Path, required=True)
-    parser.add_argument("--busybox", type=Path, required=True)
     parser.add_argument("--builder", type=Path, required=True)
     parser.add_argument("--kmi", required=True)
     parser.add_argument("--arch", choices=("aarch64", "x86_64"), required=True)

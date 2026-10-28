@@ -25,6 +25,10 @@ jobs:
           submodules: recursive
       - name: Bootstrap hash-pinned ONDK
         run: python3 tools/bootstrap_ondk.py
+      - name: Acquire hash-pinned BusyBox
+        run: |
+          python3 tools/bootstrap_busybox.py --abi "${{ matrix.abi }}" --out "$RUNNER_TEMP/busybox-${{ matrix.abi }}"
+          sha256sum "$RUNNER_TEMP/busybox-${{ matrix.abi }}"
       - name: Build patched native Magisk core
         env:
           ARCH: ${{ matrix.arch }}

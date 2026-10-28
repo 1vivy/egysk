@@ -49,7 +49,7 @@ format:
 
 # Build native core + stock vendor loader and publish an egysk-only direct ESP tree.
 # Use a fresh output directory; the publisher never replaces an existing tree.
-build_direct busybox kmi output arch="aarch64" tree="out/Magisk-direct" ndk=ondk:
+build_direct kmi output arch="aarch64" tree="out/Magisk-direct" ndk=ondk:
     #!/usr/bin/env bash
     set -euo pipefail
     static_ndk="${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME to the Android NDK r29 root}"
@@ -63,5 +63,5 @@ build_direct busybox kmi output arch="aarch64" tree="out/Magisk-direct" ndk=ondk
     just build_lkm_loader "{{arch}}"
     cargo build --locked --release --package egysk-tools --target-dir out/host
     python3 magisk/scripts/package_direct.py --native-bin "out/native/$abi/bin" \
-      --loader "out/lkm-loader/{{arch}}-linux-android/lkm-loader" --busybox "{{busybox}}" \
+      --loader "out/lkm-loader/{{arch}}-linux-android/lkm-loader" \
       --builder out/host/release/egysk-build-cpio --kmi "{{kmi}}" --arch "{{arch}}" --out "{{output}}"

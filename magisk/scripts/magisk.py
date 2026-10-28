@@ -243,7 +243,7 @@ def build(args: argparse.Namespace) -> None:
     )
     (destination / "util_functions.sh").write_text(helper)
     (destination / "util_functions.sh").chmod(0o755)
-    print(f"Native package inputs: {destination} (BusyBox supplied independently)")
+    print(f"Native package inputs: {destination} (package_direct.py adds the pinned BusyBox)")
 
 
 def main() -> None:
