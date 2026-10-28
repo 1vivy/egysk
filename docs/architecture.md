@@ -17,7 +17,7 @@ The product installs no manager application and no kernel helper. `APP_PACKAGE_N
 |Artifact|Source|Role|
 |---|---|---|
 |`egyskinit`|Magisk `magiskinit` plus `magisk/product/init.rs`|PID 1 entry from `rdinit=`. Runs the boot-payload module, stages module scripts, and backs up the stock initializer.|
-|`egyskd`|Magisk native daemon plus `magisk/product/dispatch.rs`|Second-stage daemon. Reconciles shell policy, runs module hooks, and blesses a counted boot entry.|
+|`egyskd`|Magisk native daemon plus `magisk/product/dispatch.rs`|Second-stage daemon. Reconciles shell policy and runs module hooks.|
 |`magiskpolicy`|Upstream Magisk|Compiles policy rules.|
 |`init-ld`|Upstream Magisk `libinit-ld.so`|Preload library for init interception.|
 |`egysk-runtime`|`magisk/runtime`|Linked storage, inventory, and script library. It is not a process.|
@@ -41,10 +41,13 @@ rollback, and enable state (`magisk/runtime/src/lib.rs`).
 |`androidboot.recovery=1`|`bootstrap::boot_mode`|Selects recovery lifecycle.|
 |`androidboot.mode=charger`|`bootstrap::boot_mode`|Selects charger mode. Modules do not load.|
 |`androidboot.force_normal_boot=1`|`bootstrap::boot_mode`|Prevents the `/sbin/recovery` probe from selecting recovery.|
-|`androidboot.surfacer.boot_count_path`|`dispatch::bless_boot`|Names the counted boot entry to bless on filesystem backing.|
+|`androidboot.maos.boot_control`|`store::boot_control` (bootconfig only)|Admits `virtual_only` modules only when the value is exactly `virtual`. An absent, `physical`, or other value admits none of them.|
 
 Bootconfig overrides the kernel command line per key, including explicitly disabled values
 (`magisk/runtime/src/lib.rs`).
+
+`androidboot.maos.boot_control` is an exception: egysk reads it only from `/proc/bootconfig`, not
+from the kernel command line (`magisk/runtime/src/store.rs`).
 
 ## Boot sequence
 
@@ -66,9 +69,9 @@ The consumer adds the archive to a ramdisk and passes `rdinit=/egyskinit`. The a
    discovery.
 4. `storage::open_early` mounts the ESP, merges seed and package configuration, classifies the boot
    mode, stages tools into `/dev/egysk/bin`, and prepares backing storage.
-5. With block backing, it reclaims lower caches, activates a pending package, discovers modules,
-   mounts read-only module views, and runs each module's `rdinit` scripts under one 35-second deadline
-   that all `rdinit` phases share (`magisk/product/init.rs`).
+5. With block backing, it reclaims lower caches, activates a pending package, and discovers modules.
+   It mounts read-only views and runs each module's `rdinit` scripts.
+   All `rdinit` phases share one 35-second deadline (`magisk/product/init.rs`).
 6. With filesystem backing, no store, view, or `rdinit` hook exists yet. Only tool staging and
    package RC/policy admission happen here. The stock initializer owns the backing mount.
 7. `storage::save` keeps boot inputs, tools, raw module RC, module `sepolicy.rule` content, and
@@ -77,9 +80,8 @@ The consumer adds the archive to a ramdisk and passes `rdinit=/egyskinit`. The a
 8. Magisk backs up the stock initializer to `/.egysk-backup` and writes `RECOVERYMODE=false`.
    That key is upstream's recovery-as-boot installation flag, not the current boot mode. The
    bootloader already selected the ramdisk.
-9. After stock early-init, coldboot, and bootstrap APEX setup, `egyskd` rebuilds storage at the
-   front of the init event, discovers modules, mounts Android-stage views, stages module files,
-   and records prepared markers (`magisk/runtime/src/storage.rs`).
+9. After stock early-init, coldboot, and bootstrap APEX setup, `egyskd` rebuilds storage at the start of the init event.
+   It discovers modules, mounts Android-stage views, stages module files, and records prepared markers (`magisk/runtime/src/storage.rs`).
 10. Magisk runs the remaining module stages through its own serialized stage runner. Egysk adds
     phase suffixes through `BootstrapConfig::phases` (`magisk/product/dispatch.rs`).
 
@@ -152,9 +154,16 @@ live under `/dev/egysk/store/modules`. A module ID may belong to only one owner.
 must contain a `module.prop` whose `id` matches the directory name.
 
 `modules_order` in the package sets precedence. Unlisted modules follow in sorted order. A module
-is skipped when its `disable` or `remove` flag is set, or when recovery lacks `recovery_ok`.
-Preference files under `/dev/egysk/store/preferences/<id>/` override package flags when the store
-is available (`magisk/runtime/src/store.rs`).
+is skipped when its `disable` or `remove` flag is set, when recovery lacks `recovery_ok`, or when
+it contains a `virtual_only` file and `androidboot.maos.boot_control` is not exactly `virtual`.
+Preference files under `/dev/egysk/store/preferences/<id>/` override the `disable` and `remove`
+package flags when the store is available (`magisk/runtime/src/store.rs`).
+
+The `virtual_only` check tests only whether the file exists, not its value. A skipped module gets
+no view, no `rdinit` hook, and no stage script. `storage::save` also leaves out its
+`sepolicy.rule` and its `initrc/*.rc` files, so it adds no policy and no service to the boot
+(`magisk/runtime/src/storage.rs`). On a physical or unknown boot-control owner, the native boot HAL
+and its policy therefore stay unchanged. The PID 1 boot-payload LKMs are not subject to this check.
 
 The ESP is VFAT, so its module content is copied to read-only tmpfs lowers under
 `/dev/egysk/lowers`. Generation identity binds upper/work pairs to package bytes. The overlay
@@ -222,10 +231,6 @@ The archive member `direct/egysk.cpio` uses the LZ4 legacy format with magic `0x
 the suffix. `egysk-build-cpio` writes that framing through its `--legacy-lz4` option, which is a
 published CLI flag used by maOS packaging.
 
-On filesystem backing, `dispatch::bless_boot` renames the counted boot entry named by
-`androidboot.surfacer.boot_count_path`. This follows systemd automatic boot assessment. A managed
-ROM blesses its own entries, and a blessing failure is logged but is not fatal.
-
 ## Boundaries
 
 Egysk does not do the following:
@@ -235,6 +240,7 @@ Egysk does not do the following:
 - Provide a kernel helper, sidecar daemon, or alternate root-provider ABI.
 - Ship adb, its authorization, or the USB configuration.
 - Own Android keys, credential state, or the maOS partition projection.
+- Count, bless, or record boot attempts. Boot-entry state belongs to the boot-control owner.
 - Treat a successful build or archive as an enforcing-boot result.
 
 Platform contracts for projection, credentials, and OTA live in `maos` and `maos-hals`. Kernel

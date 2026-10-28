@@ -113,6 +113,21 @@ product setting, and adb behavior stays stock.
 Evidence: `debug_boot`, `shell_policy_sql`, and `configure_shell_policy` in
 `magisk/runtime/src/lib.rs` and `magisk/product/dispatch.rs`.
 
+### Virtual-only modules need a named owner
+
+A module that replaces the boot-control service must not run beside the device's native boot HAL.
+The EFI names the boot-control owner in the bootconfig key `androidboot.maos.boot_control`. Egysk
+admits a module that contains a `virtual_only` file only when that value is exactly `virtual`. An
+absent or unknown value admits nothing, so a missing key cannot install a replacement HAL, its
+policy, or its RC. Egysk does not track or record the owner, and it does not count or bless boot
+entries. It reads the key on each boot.
+
+Evidence: `boot_control`, `virtual_only_skipped`, and `virtual_only_skipped_for` in
+`magisk/runtime/src/store.rs`, the admission check in `storage::save`
+(`magisk/runtime/src/storage.rs`), and the test
+`virtual_only_modules_are_admitted_only_for_the_virtual_owner` in
+`magisk/runtime/tests/boot_contract.rs`.
+
 ### The boot-payload module runs before first-stage mounts
 
 Bootstrap kernel modules must exist before first-stage consumers run. `egyskinit` therefore runs
@@ -152,13 +167,13 @@ Observations in this repository support source and host-test claims. They do not
 statements about a booted device.
 
 - Host tests cover archive framing, KMI selection, module admission, boot configuration parsing,
-  boot-mode classification, storage contracts, and log rotation. See
+  boot-mode classification, virtual-only admission, storage contracts, and log rotation. See
   `tools/egysk-tools/src/tests.rs`, `magisk/runtime/tests/boot_contract.rs`, and the test modules
   in `magisk/runtime/src`.
 - A successful build, a passing host test, or a successful archive admission shows that the
   exercised inputs satisfy the checked conditions. It does not show that Android boots.
-- Enforcing operation, credential enrollment and unlock, sealed projection, fastbootd, recovery
-  boot, and OTA behavior each need evidence from their consumer and from the platform owner.
+- Enforcing operation, credential enrollment and unlock, sealed projection, fastbootd, recovery boot, and OTA behavior need consumer evidence.
+  Each also needs evidence from the platform owner.
 - This repository holds no device qualification records. Report device status only from the
   platform owner's records, and report emulator exercise separately from physical-device
   qualification.

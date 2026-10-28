@@ -26,6 +26,35 @@ pub fn valued_flag(root: &Path, name: &str) -> Result<bool> {
     ensure!(values.next().is_none(), "duplicate module flag {name}");
     Ok(matches!(first, Some("1" | "true")))
 }
+/// The boot-control owner the EFI selected for this boot, from the kernel
+/// bootconfig: `androidboot.maos.boot_control`. `None` when the key is absent,
+/// so an unknown owner never admits a module that requires a named one.
+pub fn boot_control() -> Option<String> {
+    let bootconfig = std::fs::read_to_string("/proc/bootconfig").unwrap_or_default();
+    bootconfig.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "androidboot.maos.boot_control")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
+/// A module that ships the `virtual_only` flag runs only when the EFI selected
+/// the `virtual` boot-control owner. A physical or unknown owner leaves the
+/// native boot HAL and its policy untouched: the module is not admitted, so
+/// its RC, its `sepolicy.rule` and its stage scripts stay out of the boot.
+pub fn virtual_only_skipped(root: &Path) -> Result<bool> {
+    virtual_only_skipped_for(root, boot_control().as_deref())
+}
+
+/// [`virtual_only_skipped`] for a known boot-control owner. A host test supplies
+/// the owner instead of reading `/proc/bootconfig`.
+pub fn virtual_only_skipped_for(root: &Path, owner: Option<&str>) -> Result<bool> {
+    if !root.join("virtual_only").exists() {
+        return Ok(false);
+    }
+    Ok(owner != Some("virtual"))
+}
+
 pub fn identify(root: &Path, id: &str) -> Result<()> {
     identifier(id)?;
     let prop = fsu::text(&root.join("module.prop"), 65536)?;
@@ -137,6 +166,9 @@ fn discover_with_store(
             continue;
         }
         if mode == BootMode::Recovery && !valued_flag(&directory, "recovery_ok")? {
+            continue;
+        }
+        if virtual_only_skipped(&directory)? {
             continue;
         }
         identify(&directory, &id)?;

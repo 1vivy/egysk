@@ -105,12 +105,17 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
         } else {
             Path::new(MODULES).join(&module.id)
         };
-        if let Some(rules) = fsu::optional_text(&root.join("sepolicy.rule"), 1024 * 1024)? {
+        // A virtual-only module contributes no policy and no service in a
+        // physical or unknown boot-control boot: the native HAL keeps its own.
+        let admitted = !store::virtual_only_skipped(&root)?;
+        if admitted
+            && let Some(rules) = fsu::optional_text(&root.join("sepolicy.rule"), 1024 * 1024)?
+        {
             policy.push_str(&rules);
             policy.push('\n');
         }
         let initrc = root.join("initrc");
-        if !storage.config.norc && initrc.exists() {
+        if admitted && !storage.config.norc && initrc.exists() {
             for file in fsu::children(&initrc)? {
                 if file.extension().and_then(|s| s.to_str()) == Some("rc") {
                     rc.push_str(&fsu::text(&file, 65536)?);

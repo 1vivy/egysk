@@ -1,7 +1,6 @@
 //! Additional filenames executed by Magisk's native script runner and inventory.
 use crate::ffi::{ModuleInfo, exec_module_scripts};
-use crate::resetprop::get_prop;
-use base::{Utf8CString, cstr};
+use base::Utf8CString;
 use std::sync::LazyLock;
 
 // Immutable filesystem inputs, not a second inventory or lifecycle state.
@@ -50,27 +49,3 @@ pub fn product_script_env() {
     }
 }
 
-/// A completed boot blesses the counted entry this boot launched (systemd
-/// automatic boot assessment): Surfacer passes the file it renamed right before
-/// the launch as the `androidboot.surfacer.boot_count_path` bootconfig key,
-/// which Android exposes as `ro.boot.surfacer.boot_count_path`, and this point is
-/// only reached once Android's `sys.boot_completed=1` ran every module hook.
-/// Direct-mode Android has no efivars, so the daemon blesses from that property
-/// rather than from the volatile `LoaderBootCountPath` variable.
-///
-/// Only the direct descriptor (filesystem backing adopted from stock init, with
-/// no managed ROM projection) leaves blessing to egysk; a managed ROM's own
-/// userspace blesses the entries it counted. Blessing is an idempotent rename of
-/// that one file, so a case both visit is harmless, and a failure is logged
-/// rather than fatal: the boot did succeed.
-pub fn bless_boot() {
-    if STORAGE.config.backing.kind != "filesystem" {
-        return;
-    }
-    let value = get_prop(cstr!("ro.boot.surfacer.boot_count_path"));
-    match egysk_runtime::bless::bless_counted_entry(&value) {
-        Ok(None) => base::info!("** no counted boot entry to bless ({value:?})"),
-        Ok(Some(path)) => base::info!("** blessed boot entry: {}", path.display()),
-        Err(error) => base::error!("bless counted boot entry: {error:#}"),
-    }
-}
