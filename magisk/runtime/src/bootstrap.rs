@@ -300,24 +300,6 @@ pub fn label_module(module: &Module) -> Result<()> {
     )?;
     Ok(())
 }
-pub fn restore_efivarfs() -> Result<()> {
-    // Only a loaded filesystem is restored; EFI is an independent critical LKM
-    // when the platform requires it, not a generic ROM schema dependency.
-    let available = fs::read_to_string("/proc/filesystems")?
-        .lines()
-        .any(|line| line.split_whitespace().last() == Some("efivarfs"));
-    let path = Path::new("/sys/firmware/efi/efivars");
-    if available && !fsu::mounted(path)? {
-        fsu::mount(
-            "efivarfs",
-            path,
-            "efivarfs",
-            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-            &format!("context={FILE_CONTEXT}"),
-        )?;
-    }
-    Ok(())
-}
 
 /// Stage `rd/` under the owned executable runtime, merging disjoint directories
 /// but rejecting every file collision. `early_bin` lists module-relative files

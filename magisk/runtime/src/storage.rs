@@ -170,7 +170,7 @@ pub fn open_android() -> Result<()> {
     }
     bootstrap::label_tree(Path::new(RD), FILE_CONTEXT)?;
     bootstrap::label_tree(Path::new(BIN), FILE_CONTEXT)?;
-    bootstrap::restore_efivarfs()
+    Ok(())
 }
 
 pub fn mount_snapshot() -> Result<Vec<(u64, PathBuf)>> {
