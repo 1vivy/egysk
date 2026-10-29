@@ -11,3 +11,4 @@
 0002-lifecycle-and-projection-adapters.patch
 0003-policy-and-dependency-errors.patch
 0004-native-init-and-early-hooks.patch
+0005-overlay-readonly-projection.patch

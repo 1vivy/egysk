@@ -1,0 +1,305 @@
+diff --git a/native/src/core/module.rs b/native/src/core/module.rs
+--- a/native/src/core/module.rs
++++ b/native/src/core/module.rs
+@@ -8,6 +8,7 @@
+ };
+ use nix::fcntl::OFlag;
+ use nix::mount::MsFlags;
++use nix::sys::stat::{Mode, SFlag, mknod};
+ use nix::unistd::UnlinkatFlags;
+ use std::collections::BTreeMap;
+ use std::os::fd::IntoRawFd;
+@@ -742,6 +743,71 @@
+     modules
+ }
+ 
++/// Partitions that the opt-in read-only overlay projection extracts and mounts.
++const OVERLAY_PARTITIONS: [&str; 3] = ["vendor", "product", "system_ext"];
++
++/// Whether a module knowingly accepts the read-only projection.
++///
++/// The value must be `1` or `true`, as with the other valued module flags.
++fn overlay_opted(module: &str) -> bool {
++    let root = std::path::Path::new(MODULEROOT).join(module);
++    egysk_runtime::store::valued_flag(&root, egysk_runtime::projection::OVERLAY_MARKER)
++        .unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("module overlay marker: {error:#}"))
++        })
++}
++
++/// Absolute Android paths a Magic Mount tree claims: files, symlinks, and
++/// whiteouts, plus directories it binds wholesale for a replaced directory.
++///
++/// A merged directory is not a claim, because both projection methods merge
++/// real directories. The `.replace` marker is a decision, not a path.
++fn claimed_paths(node: &FsNode, prefix: &str, claimed: &mut Vec<String>) {
++    let FsNode::Directory { children } = node else {
++        return;
++    };
++    let replaces = matches!(children.get(".replace"), Some(FsNode::File { .. }));
++    for (name, child) in children {
++        if name == ".replace" {
++            continue;
++        }
++        let path = format!("{prefix}/{name}");
++        match child {
++            FsNode::Directory { .. } => {
++                if replaces {
++                    // The native replace path binds this child directory
++                    // recursively, so it covers every path below it.
++                    claimed.push(path);
++                } else {
++                    claimed_paths(child, &path, claimed);
++                }
++            }
++            _ => claimed.push(path),
++        }
++    }
++}
++
++/// Mount flags for an overlay layer, including the read-only contract.
++fn overlay_flags(flags: &[egysk_runtime::projection::Flag]) -> MsFlags {
++    use egysk_runtime::projection::Flag;
++    let mut out = MsFlags::empty();
++    for flag in flags {
++        out |= match flag {
++            Flag::ReadOnly => MsFlags::MS_RDONLY,
++            Flag::NoSuid => MsFlags::MS_NOSUID,
++            Flag::NoDev => MsFlags::MS_NODEV,
++            Flag::NoExec => MsFlags::MS_NOEXEC,
++            Flag::NoAtime => MsFlags::MS_NOATIME,
++            Flag::NoDirAtime => MsFlags::MS_NODIRATIME,
++            // nix exposes no constant for this Linux 5.10 flag.
++            Flag::NoSymFollow => {
++                MsFlags::from_bits_retain(libc::MS_NOSYMFOLLOW as libc::c_ulong)
++            }
++        };
++    }
++    out
++}
++
+ impl MagiskD {
+     pub fn run_early_modules(&self, stage: &str) {
+         crate::bootstages::product_events::hooks(stage, &collect_modules(false, false));
+@@ -749,7 +815,7 @@
+ 
+     pub fn project_early_modules(&self) {
+         self.prepare_projection(false).and_then(|_| self.apply_modules(&collect_modules(false, false)))
+-            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native early magic mount failed"));
++            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native module projection failed"));
+     }
+ 
+     pub fn handle_modules(&self) {
+@@ -760,7 +826,7 @@
+         crate::bootstages::product_events::hooks("post-fs-data", &modules);
+         let modules = collect_modules(zygisk, true);
+         self.prepare_projection(true).and_then(|_| self.apply_modules(&modules))
+-            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native magic mount failed"));
++            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native module projection failed"));
+         crate::bootstages::product_events::hooks("post-mount", &modules);
+         self.module_list.set(modules).ok();
+     }
+@@ -772,6 +838,154 @@
+         let parent = std::fs::read_to_string("/proc/1/mountinfo").unwrap_or_default();
+         for target in egysk_runtime::mounts::projection_exports(&mountinfo, &parent) {
+             nix::mount::umount2(target.as_str(), nix::mount::MntFlags::MNT_DETACH)?;
++        }
++        Ok(())
++    }
++
++    /// Detach the staging tmpfs left by an earlier projection stage.
++    fn clear_overlay_staging(&self) {
++        let staging = format!("{}/.egysk/overlay", get_magisk_tmp().as_str());
++        let mut text = staging.clone();
++        let path = Utf8CStr::from_string(&mut text);
++        if base::parse_mount_info("self")
++            .iter()
++            .any(|info| info.target == staging)
++        {
++            path.unmount().log_ok();
++        }
++    }
++
++    /// Project the modules that opted into the read-only overlay projection.
++    ///
++    /// The plan is validated before this method mounts anything. A rejected plan
++    /// stops the boot instead of falling back to Magic Mount. Staged content is
++    /// a copy: the overlay is read-only and a write through it never reaches the
++    /// module view.
++    fn project_overlay(
++        &self,
++        magic: &[String],
++        modules: &[egysk_runtime::projection::Module],
++    ) -> LoggedResult<()> {
++        let staging = format!("{}/.egysk/overlay", get_magisk_tmp().as_str());
++        let plan = egysk_runtime::projection::plan(
++            std::path::Path::new("/"),
++            std::path::Path::new(&staging),
++            &OVERLAY_PARTITIONS,
++            modules,
++        )
++        .unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("overlay projection plan: {error:#}"))
++        });
++        if plan.mounts.is_empty() {
++            return Ok(());
++        }
++        if let Some(path) = egysk_runtime::projection::first_conflict(magic, &plan.targets()) {
++            egysk_runtime::fatal_boot(&format!(
++                "overlay_readonly conflicts with Magic Mount at {path}"
++            ));
++        }
++
++        // Admission before any staging mount: a layer covers the whole
++        // partition, so its covering mount must already be read-only. A
++        // writable covering mount, such as recovery's ramdisk /system, is
++        // rejected here instead of becoming silently read-only.
++        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").log()?;
++        let mut layers = Vec::new();
++        for mount in &plan.mounts {
++            let flags = egysk_runtime::projection::admission(&mountinfo, &mount.real)
++                .unwrap_or_else(|error| {
++                    egysk_runtime::fatal_boot(&format!(
++                        "overlay projection admission: {error:#}"
++                    ))
++                });
++            let data = mount.data().unwrap_or_else(|error| {
++                egysk_runtime::fatal_boot(&format!("overlay mount data: {error:#}"))
++            });
++            layers.push((mount, overlay_flags(&flags), data));
++        }
++
++        self.clear_overlay_staging();
++        let staging_root = Utf8CString::from(staging.clone());
++        staging_root.mkdirs(0o700)?;
++        nix::mount::mount(
++            Some("egysk"),
++            staging_root.as_str(),
++            Some("tmpfs"),
++            MsFlags::MS_NODEV,
++            Some("mode=0700"),
++        )?;
++
++        let staged = (|| -> LoggedResult<()> {
++            for op in &plan.ops {
++                match op {
++                    egysk_runtime::projection::Op::Dir { to, attr } => {
++                        let to = Utf8CString::from(to.to_string_lossy().into_owned());
++                        let attr = Utf8CString::from(attr.to_string_lossy().into_owned());
++                        to.mkdir(0o755)?;
++                        let to_ref: &Utf8CStr = &to;
++                        let attr_ref: &Utf8CStr = &attr;
++                        clone_attr(attr_ref, to_ref)?;
++                    }
++                    egysk_runtime::projection::Op::Copy { from, to, attr } => {
++                        std::fs::copy(from, to).log()?;
++                        let to = Utf8CString::from(to.to_string_lossy().into_owned());
++                        let attr = Utf8CString::from(attr.to_string_lossy().into_owned());
++                        let to_ref: &Utf8CStr = &to;
++                        let attr_ref: &Utf8CStr = &attr;
++                        clone_attr(attr_ref, to_ref)?;
++                    }
++                    egysk_runtime::projection::Op::Link { to, target, attr } => {
++                        let to = Utf8CString::from(to.to_string_lossy().into_owned());
++                        let target = Utf8CString::from(target.clone());
++                        to.create_symlink_to(&target)?;
++                        if let Some(attr) = attr {
++                            let attr = Utf8CString::from(attr.to_string_lossy().into_owned());
++                            let to_ref: &Utf8CStr = &to;
++                            let attr_ref: &Utf8CStr = &attr;
++                            clone_attr(attr_ref, to_ref)?;
++                        }
++                    }
++                    egysk_runtime::projection::Op::Whiteout { to } => {
++                        let to = Utf8CString::from(to.to_string_lossy().into_owned());
++                        mknod(
++                            to.as_utf8_cstr(),
++                            SFlag::S_IFCHR,
++                            Mode::from_bits_truncate(0o600),
++                            libc::makedev(0, 0),
++                        )?;
++                    }
++                }
++            }
++            Ok(())
++        })();
++        if let Err(error) = staged {
++            // A failed stage leaves no projection mount behind.
++            self.clear_overlay_staging();
++            return Err(error);
++        }
++
++        let mut mounted: Vec<String> = Vec::new();
++        for (mount, flags, data) in layers {
++            if let Err(error) = nix::mount::mount(
++                Some("egysk"),
++                mount.target.as_str(),
++                Some("overlay"),
++                flags,
++                Some(data.as_str()),
++            ) {
++                // No partial projection: detach the layers this call mounted,
++                // then the staging mount, and report the original failure.
++                for target in mounted.iter().rev() {
++                    let _ = nix::mount::umount2(target.as_str(), nix::mount::MntFlags::MNT_DETACH);
++                }
++                self.clear_overlay_staging();
++                return Err(error.into());
++            }
++            mounted.push(mount.target.clone());
++            info!(
++                "overlay_readonly: {} projected read-only from module content",
++                mount.target
++            );
+         }
+         Ok(())
+     }
+@@ -792,6 +1006,7 @@
+         }
+         if replace_early {
+             self.clear_early_modules()?;
++            self.clear_overlay_staging();
+             crate::mount::clean_mounts();
+             let worker = cstr::buf::default().join_path(get_magisk_tmp()).join_path(WORKERDIR);
+             nix::mount::mount(Some("egysk"), worker.as_str(), Some("tmpfs"), MsFlags::MS_NODEV, Some("mode=0700"))?;
+@@ -814,6 +1029,7 @@
+         let mut buf3 = cstr::buf::dynamic(256);
+ 
+         let mut paths = ModulePaths::new(&mut buf1, &mut buf2, &mut buf3);
++        let mut overlay_modules: Vec<egysk_runtime::projection::Module> = Vec::new();
+ 
+         // Step 1: Create virtual filesystem tree
+         //
+@@ -832,6 +1048,16 @@
+ 
+             // ESP metadata flags use the same valued convention as ordinary marker files.
+             if egysk_runtime::store::valued_flag(std::path::Path::new(MODULEROOT).join(&info.name).as_path(), "skip_mount").unwrap_or_else(|error| egysk_runtime::fatal_boot(&format!("module flags: {error:#}"))) {
++                continue;
++            }
++
++            // An opted module gives up write-through knowingly. It leaves the
++            // Magic Mount tree and joins the read-only overlay plan.
++            if overlay_opted(info.name.as_str()) {
++                overlay_modules.push(egysk_runtime::projection::Module::new(
++                    info.name.clone(),
++                    std::path::Path::new(MODULEROOT).join(&info.name).join("system"),
++                ));
+                 continue;
+             }
+ 
+@@ -888,6 +1114,15 @@
+         }
+         roots.insert("system", system);
+ 
++        if !overlay_modules.is_empty() {
++            // Both methods reject an overlapping path before either mounts.
++            let mut magic = Vec::new();
++            for (dir, root) in roots.iter_mut() {
++                claimed_paths(root, &format!("/{dir}"), &mut magic);
++            }
++            self.project_overlay(&magic, &overlay_modules)?;
++        }
++
+         drop(paths);
+         let mut paths = MountPaths::new(&mut buf1, &mut buf2);
+ 

@@ -174,14 +174,105 @@ Durable module state is outside generations. Activation requires all effective v
 unmounted. A synced journal precedes each multi-directory transaction, and recovery uses content
 identity rather than directory presence.
 
+### Read-only overlay projection (opt-in)
+
+A module can opt in by setting `overlay_readonly` to `1` in its module directory or by adding
+`overlay_readonly=1` to its `module.prop`. That module leaves the per-file Magic Mount tree and
+joins one read-only OverlayFS layer per partition. The default stays Magic Mount; the marker is
+the whole opt-in, and there is no fallback. `skip_mount` still wins: a module with both markers
+is not projected by either method.
+
+The projection stages an immutable copy of the module content into a product tmpfs at
+`/dev/egysk/.egysk/overlay`, then mounts `lowerdir=<staged>:<real>` on `/system`, `/vendor`,
+`/product`, or `/system_ext`. The staged layer is above the real partition, so module content
+wins. The planner is `magisk/runtime/src/projection.rs`; the native projector executes its
+operations (`native/src/core/module.rs`, patch `0005`).
+
+The mode keeps these contracts:
+
+- `modules_order`, the inventory, and the two projection stages are unchanged. The second stage
+  detaches the early exports before it restages from the current views.
+- An opted module keeps its position in `modules_order` against other opted modules. A path that
+  both methods would claim is rejected, because a Magic Mount bind always sits above an overlay
+  layer and would override the module order.
+- A non-directory `.replace` marker hides every real child the module does not provide, by one
+  whiteout per name. A module whiteout becomes a character device 0/0 in the staged layer.
+  Symlinks are recreated, and a file or symlink hides a real name of any type.
+- Owner, mode, and SELinux label come from the real target when it exists, as the native
+  collector already does to module files.
+- A layer covers the whole partition, so the projection requires the covering mount of the target
+  to be read-only already. The covering mount is the deepest record over the canonical path,
+  matched by path components; a missing record, a `/system` directory on a writable root, or a
+  writable recovery ramdisk is rejected before staging. Flags add `MS_RDONLY` and inherit
+  `nosuid`, `nodev`, `noexec`, `noatime`, `nodiratime`, and `nosymfollow` from that record.
+- A product-source mount on a partition root is an export target and a target-namespace mount,
+  so both cleanups detach it (`magisk/runtime/src/mounts.rs`).
+
+The mode rejects, before any mount, every input it cannot project with the same result: a
+`.replace` marker on a partition root, a partition with no covering mount or a writable one,
+a node below a partition root whose real target is absent or a symlink, a module directory over
+a real non-directory, a module file over a real directory, any other node type, and a path
+claimed by both an opted module and a Magic Mount module.
+
+The read-only scope follows the admission rule. The layer covers the entire partition, so the
+mode runs only where the platform already mounts that partition read-only. Recovery keeps
+`/system` on its writable ramdisk, so an opted module is rejected there and Magic Mount is the
+only projection in recovery.
+
+The trade is explicit. Projected content is read-only, so a write through it fails with `EROFS`
+and never reaches the module view. The staged copy also occupies tmpfs. A module that must
+accept writes keeps Magic Mount.
+
+### Module mounts in a target namespace
+
+The DenyList cleanup does not depend on Zygisk injection. `enable_deny` starts the logcat monitor
+when the Zygisk setting is off, and that monitor calls `revert_unmount` for a target process
+(`native/src/core/deny/utils.cpp`, `native/src/core/deny/logcat.cpp`). `magisk --denylist exec`
+runs the same cleanup in a private namespace (`native/src/core/deny/cli.cpp`).
+
+`revert_unmount` and `clear_early_modules` select their targets with
+`mounts::namespace_mounts` and `mounts::projection_exports` (`magisk/runtime/src/mounts.rs`).
+A mount holds module content when its source is `egysk` or when it comes from the store
+filesystem below the store's module directory. It belongs to the product runtime when its source
+is `egysk` or when it is a module or state mount of the store filesystem. The store identity
+comes from the parent namespace, not from the target namespace: both selectors read
+`/proc/1/mountinfo` and accept the store only from a single record at that target. A target
+store bind, module view, or state bind counts as owned only when its device and root agree with
+that record. Without a parent record, or with two records, only product-source mounts count. The
+early projection runs in the PID 1 namespace, so its anchor equals its own view.
+
+An export target is strictly below `/system`, `/vendor`, `/product`, or `/system_ext`, or it is the
+product-source layer on one of those roots, which is the opt-in read-only overlay projection. The
+namespace cleanup also selects the product runtime mounts at or below `/dev/egysk`, which covers
+the store bind, the module views, the lowers, the worker, the module mirror, the overlay staging
+tmpfs, and the state binds when the parent record confirms them. It selects the package mount at
+`/dev/esp` only when its source is exactly the selected ESP device node. It selects no platform
+mount and no foreign installation.
+
+A target can hold stacked mounts. Both selectors return the deepest target first and one entry
+for each owned layer. The cleanup stops at an unowned layer on the same target, so it keeps that
+layer and every layer below it.
+
+`revert_unmount` detaches nothing until two checks pass (`native/src/core/mount.rs`). The process
+must be in a mount namespace that differs from PID 1's namespace, and recursive slave conversion
+of `/` must succeed. Slave conversion keeps mounts that arrive from Android and stops a detach
+from reaching a shared parent. A failed check returns before any detach, so the daemon namespace
+and any shared peer stay unchanged. The cleanup keeps the inventory and the module stages.
+
+A target namespace then keeps no product mount when the parent record confirms the store. A
+mismatched store target, a stacked store target, or an unreadable parent record leaves that
+layer and the layers below it. The plain directories of `/dev/egysk` (`bin`, `rd`) are not mounts
+and stay. SELinux labels bound what the process reads through them, and the kernel command line
+and init properties stay visible to any reader.
+
 ## SELinux and authorization
 
 Magisk's native policy builder owns the `egysk` daemon domain, the `egysk_file` type, and the
 `egysk_log_file` type. The daemon domain inherits upstream Magisk's broad permissions and its
 per-domain permissive setting. There is no second bootstrap policy pass.
 
-The egysk policy delta covers early tmpfs labels, backing labels, a private efivarfs association,
-nosuid RC service transitions, and the fatal early-stage path
+The egysk policy delta covers early tmpfs labels, backing labels, nosuid RC service transitions,
+and the fatal early-stage path
 (`magisk/patches/Magisk/0003-policy-and-dependency-errors.patch`).
 
 Module `sepolicy.rule` content still governs module services. This does not make the boot HAL or

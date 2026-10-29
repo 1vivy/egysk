@@ -547,14 +547,6 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 -    // kernel limitations, don't let it break module mount entirely.
 -    src.bind_mount_to(dest, rec).log_ok();
 -    dest.remount_mount_point_flags(MsFlags::MS_RDONLY).log_ok();
--}
--
--fn mount_dummy<'a>(
--    reason: &str,
--    src: &Utf8CStr,
--    dest: &'a Utf8CStr,
--    is_dir: bool,
--) -> OsResult<'a, ()> {
 +    src.bind_mount_to(dest, rec)?;
 +    // Only mirrored Android files remain read-only. Effective module files and
 +    // worker tmpfs directories must retain the writable backing view.
@@ -562,8 +554,14 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 +        dest.remount_mount_point_flags(MsFlags::MS_RDONLY)?;
 +    }
 +    Ok(())
-+}
-+
+ }
+ 
+-fn mount_dummy<'a>(
+-    reason: &str,
+-    src: &Utf8CStr,
+-    dest: &'a Utf8CStr,
+-    is_dir: bool,
+-) -> OsResult<'a, ()> {
 +fn mount_dummy(reason: &str, src: &Utf8CStr, dest: &Utf8CStr, is_dir: bool) -> LoggedResult<()> {
      if is_dir {
          dest.mkdir(0o000)?;
@@ -677,7 +675,8 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
                              FsNode::Symlink {
                                  target: link.to_owned(),
                              }
-@@ -421,7 +405,7 @@
+@@ -420,8 +404,8 @@
+                     module_log!("mklink", path.worker(), "./magiskpolicy");
                      path.worker().create_symlink_to(cstr!("./magiskpolicy"))?;
                  } else {
 -                    module_log!("mklink", path.worker(), "./magisk");
@@ -701,7 +700,9 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  fn inject_magisk_bins(system: &mut FsNode, is_emulator: bool) {
      fn inject(children: &mut FsNodeMap) {
          let mut path = cstr::buf::default().join_path(get_magisk_tmp());
-@@ -447,7 +429,7 @@
+@@ -445,16 +427,16 @@
+         // Inject binaries
+ 
          let len = path.len();
 -        path.append_path("magisk");
 +        path.append_path("bin/egyskd");
@@ -711,7 +712,8 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              FsNode::File {
                  src: path.to_owned(),
              },
-@@ -456,5 +438,5 @@
+         );
+ 
          path.truncate(len);
 -        path.append_path("magiskpolicy");
 +        path.append_path("bin/magiskpolicy");
@@ -782,11 +784,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 -            OFlag::O_RDONLY | OFlag::O_CREAT | OFlag::O_CLOEXEC,
 -            0,
 -        )?;
-+    for_each_module(|entry| {
-+        egysk_runtime::set_enabled(entry.name().as_str(), false).unwrap_or_else(|error| {
-+            egysk_runtime::fatal_boot(&format!("disable module: {error:#}"))
-+        });
-         Ok(())
+-        Ok(())
 -    })
 -    .log_ok();
 -}
@@ -805,7 +803,11 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
 -        if dir.contains_path(cstr!("uninstall.sh")) {
 -            run_uninstall_script(e.name());
 -        }
--        Ok(())
++    for_each_module(|entry| {
++        egysk_runtime::set_enabled(entry.name().as_str(), false).unwrap_or_else(|error| {
++            egysk_runtime::fatal_boot(&format!("disable module: {error:#}"))
++        });
+         Ok(())
 -    })
 -    .log_ok();
 -    cstr!(MODULEROOT).remove_all().log_ok();
@@ -850,7 +852,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  
      if zygisk_enabled && open_zygisk {
          let mut use_memfd = true;
-@@ -816,26 +733,83 @@
+@@ -816,26 +733,79 @@
          });
      }
  
@@ -864,19 +866,19 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  }
  
  impl MagiskD {
+-    pub fn handle_modules(&self) {
+-        setup_module_mount();
+-        upgrade_modules().ok();
 +    pub fn run_early_modules(&self, stage: &str) {
 +        crate::bootstages::product_events::hooks(stage, &collect_modules(false, false));
 +    }
-+
+ 
 +    pub fn project_early_modules(&self) {
 +        self.prepare_projection(false).and_then(|_| self.apply_modules(&collect_modules(false, false)))
 +            .unwrap_or_else(|_| egysk_runtime::fatal_boot("native early magic mount failed"));
 +    }
 +
-     pub fn handle_modules(&self) {
--        setup_module_mount();
--        upgrade_modules().ok();
--
++    pub fn handle_modules(&self) {
 +        // ESP/local generation activation already completed before any view was
 +        // mounted. Renaming those active lowers here would corrupt the view.
          let zygisk = self.zygisk_enabled.load(Ordering::Acquire);
@@ -896,17 +898,13 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
  
 -    fn apply_modules(&self, module_list: &[ModuleInfo]) {
 +    pub fn clear_early_modules(&self) -> LoggedResult<()> {
-+        let mounts = base::parse_mount_info("self");
-+            // Only this product's native Android exports. Never detach another
-+            // root installation, the ESP, or any persistent module view.
-+            let mut exports: Vec<_> = mounts.into_iter().filter(|mount| {
-+                mount.source == "egysk" && ["/system", "/vendor", "/product", "/system_ext"]
-+                    .iter().any(|root| std::path::Path::new(&mount.target).starts_with(root))
-+            }).collect();
-+            exports.sort_by_key(|mount| std::cmp::Reverse(mount.target.len()));
-+            for mount in exports {
-+                nix::mount::umount2(mount.target.as_str(), nix::mount::MntFlags::MNT_DETACH)?;
-+            }
++        // Exports only. The module views stay mounted; they are the source of
++        // the projection that replaces this tree.
++        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").log()?;
++        let parent = std::fs::read_to_string("/proc/1/mountinfo").unwrap_or_default();
++        for target in egysk_runtime::mounts::projection_exports(&mountinfo, &parent) {
++            nix::mount::umount2(target.as_str(), nix::mount::MntFlags::MNT_DETACH)?;
++        }
 +        Ok(())
 +    }
 +
@@ -943,7 +941,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
          let mut system = FsNode::new_dir();
  
          // Create buffers for paths
-@@ -860,18 +834,16 @@
+@@ -860,18 +830,16 @@
              }
              drop(prop);
  
@@ -965,7 +963,7 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              }
          }
  
-@@ -883,12 +855,14 @@
+@@ -883,12 +851,14 @@
          // We directly inject file nodes into the virtual filesystem tree we built in the previous
          // step, treating Magisk just like a special "module".
  
@@ -982,30 +980,31 @@ diff --git a/native/src/core/module.rs b/native/src/core/module.rs
              let mut zygisk = self.zygisk.lock();
              zygisk.set_prop();
              inject_zygisk_bins(&zygisk.lib_name, &mut system);
-@@ -930,7 +904,8 @@
+@@ -930,7 +900,8 @@
              // tmpfs worker directory, and real sub-nodes need to be mirrored inside it.
  
              let paths = paths.append(dir);
 -            root.commit(paths, true).log_ok();
--        }
--    }
--}
 +            root.commit(paths, true)?;
-+        }
+         }
 +        Ok(())
-+    }
-+}
+     }
+ }
 diff --git a/native/src/core/mount.rs b/native/src/core/mount.rs
 --- a/native/src/core/mount.rs
 +++ b/native/src/core/mount.rs
-@@ -8,7 +8,6 @@
+@@ -8,10 +8,9 @@
  use libc::{c_uint, dev_t, major};
  use nix::mount::MsFlags;
  use nix::sys::stat::{Mode, SFlag, mknod};
 -use num_traits::AsPrimitive;
  use std::cmp::Ordering::{Greater, Less};
  use std::ffi::OsStr;
- use std::path::{Path, PathBuf};
+-use std::path::{Path, PathBuf};
++use std::path::Path;
+ 
+ // Linux allocated devices: 240-254 are reserved for LOCAL/EXPERIMENTAL use.
+ const DYNAMIC_MAJOR_MIN: u32 = 240;
 @@ -25,7 +24,7 @@
          .join_path(magisk_tmp)
          .join_path(PREINITDEV);
@@ -1015,18 +1014,76 @@ diff --git a/native/src/core/mount.rs b/native/src/core/mount.rs
      {
          // DO NOT mount the block device directly, as we do not know the flags and configs
          // to properly mount the partition; mounting block devices directly as rw could cause
-@@ -235,9 +234,9 @@
+@@ -233,31 +232,51 @@
+         debug!("denylist: handling PID=[{}]", pid);
+     }
  
-     let mut targets = Vec::new();
+-    let mut targets = Vec::new();
++    // Namespace membership alone does not stop shared subtree propagation.
++    // Keep inbound Android mounts, but never propagate a detach outward.
++    let isolated = match (
++        std::fs::read_link("/proc/self/ns/mnt"),
++        std::fs::read_link("/proc/1/ns/mnt"),
++    ) {
++        (Ok(current), Ok(init)) => current != init,
++        _ => false,
++    };
++    if !isolated {
++        warn!("denylist: refusing cleanup without an isolated mount namespace");
++        return;
++    }
++    if nix::mount::mount(
++        None::<&str>,
++        "/",
++        None::<&str>,
++        MsFlags::MS_SLAVE | MsFlags::MS_REC,
++        None::<&str>,
++    )
++    .is_err()
++    {
++        warn!("denylist: cannot isolate outbound mount propagation");
++        return;
++    }
  
 -    // Unmount Magisk tmpfs and mounts from module files
-+    // Select only mounts owned by this product, never a foreign installation.
-     for info in parse_mount_info("self") {
+-    for info in parse_mount_info("self") {
 -        if info.source == "magisk" || info.root.starts_with("/adb/modules") {
-+        if info.source == "egysk" {
-             targets.push(info.target);
+-            targets.push(info.target);
++    // Detach only the mounts this product owns. Every platform mount and every
++    // foreign installation stays.
++    let mountinfo = match std::fs::read_to_string("/proc/self/mountinfo") {
++        Ok(mountinfo) => mountinfo,
++        Err(error) => {
++            warn!("denylist: mountinfo unreadable: {error}");
++            return;
          }
+-    }
++    };
++    let parent = std::fs::read_to_string("/proc/1/mountinfo").unwrap_or_else(|error| {
++        warn!("denylist: parent mountinfo unreadable: {error}");
++        String::new()
++    });
++    let targets = egysk_runtime::mounts::namespace_mounts(&mountinfo, &parent);
+ 
+     if targets.is_empty() {
+         return;
      }
+ 
+-    let mut prev: Option<PathBuf> = None;
+-    targets.sort();
+-    targets.retain(|target| {
+-        if let Some(prev) = &prev
+-            && Path::new(target).starts_with(prev)
+-        {
+-            return false;
+-        }
+-        prev = Some(PathBuf::from(target.clone()));
+-        true
+-    });
+-
+     for mut target in targets {
+         let target = Utf8CStr::from_string(&mut target);
+         if target.unmount().is_ok() {
 diff --git a/native/src/core/scripting.cpp b/native/src/core/scripting.cpp
 --- a/native/src/core/scripting.cpp
 +++ b/native/src/core/scripting.cpp
