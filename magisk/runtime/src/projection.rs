@@ -201,9 +201,20 @@ fn covers(ancestor: &str, path: &str) -> bool {
 /// unreadable target, or a writable record is rejected before the caller stages
 /// anything. Restrictions of the covering mount are inherited, never added or
 /// dropped.
+///
+/// The canonical target must equal the declared partition root. An alias would
+/// be mounted at one path while the mount record and both product mount
+/// selectors name the other, so the early layer could survive cleanup. An alias
+/// is rejected before staging, as a missing or writable covering mount is.
 pub fn admission(mountinfo: &str, target: &Path) -> Result<Vec<Flag>> {
     let canonical = fs::canonicalize(target)
         .with_context(|| format!("resolve overlay target {}", target.display()))?;
+    ensure!(
+        canonical.as_path() == target,
+        "overlay target {} resolves to {}; partition-root aliases are unsupported",
+        target.display(),
+        canonical.display()
+    );
     let canonical = canonical
         .to_str()
         .with_context(|| format!("overlay target is not UTF-8: {}", target.display()))?;

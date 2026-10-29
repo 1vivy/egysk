@@ -205,14 +205,19 @@ The mode keeps these contracts:
   matched by path components; a missing record, a `/system` directory on a writable root, or a
   writable recovery ramdisk is rejected before staging. Flags add `MS_RDONLY` and inherit
   `nosuid`, `nodev`, `noexec`, `noatime`, `nodiratime`, and `nosymfollow` from that record.
+- A partition root must resolve to its declared literal path. An alias, such as `/system` pointing
+  at `/system_root/system`, records a different mount target than the one both mount selectors
+  name, so the early layer could survive cleanup. An alias is rejected before staging instead of
+  widening the selectors.
 - A product-source mount on a partition root is an export target and a target-namespace mount,
   so both cleanups detach it (`magisk/runtime/src/mounts.rs`).
 
 The mode rejects, before any mount, every input it cannot project with the same result: a
-`.replace` marker on a partition root, a partition with no covering mount or a writable one,
-a node below a partition root whose real target is absent or a symlink, a module directory over
-a real non-directory, a module file over a real directory, any other node type, and a path
-claimed by both an opted module and a Magic Mount module.
+`.replace` marker on a partition root, a partition with no covering mount or a writable one, a
+partition root whose canonical path differs from its declared literal, a node below a partition
+root whose real target is absent or a symlink, a module directory over a real non-directory, a
+module file over a real directory, any other node type, and a path claimed by both an opted
+module and a Magic Mount module.
 
 The read-only scope follows the admission rule. The layer covers the entire partition, so the
 mode runs only where the platform already mounts that partition read-only. Recovery keeps

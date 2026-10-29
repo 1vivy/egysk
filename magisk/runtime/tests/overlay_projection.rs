@@ -20,26 +20,34 @@ fn marker() -> &'static str {
 }
 
 struct Fixture {
-    root: TempDir,
+    // Held only so the temporary directory outlives the fixture.
+    _root: TempDir,
+    // Canonical fixture root: a symlinked TMPDIR must not make every declared
+    // target look like an alias.
+    base: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Fixture {
-        Fixture {
-            root: tempfile::tempdir().unwrap(),
-        }
+        let root = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(root.path()).unwrap();
+        Fixture { _root: root, base }
+    }
+
+    fn base(&self) -> &Path {
+        &self.base
     }
 
     fn real(&self) -> PathBuf {
-        self.root.path().join("real")
+        self.base.join("real")
     }
 
     fn staging(&self) -> PathBuf {
-        self.root.path().join("staging")
+        self.base.join("staging")
     }
 
     fn view(&self, id: &str) -> PathBuf {
-        self.root.path().join("views").join(id).join("system")
+        self.base.join("views").join(id).join("system")
     }
 
     fn module(&self, id: &str) -> Module {
@@ -507,6 +515,26 @@ fn admission_does_not_match_a_name_prefix() {
         message.contains("no covering mount"),
         "unexpected error: {message}"
     );
+}
+
+#[test]
+fn admission_rejects_a_partition_root_alias() {
+    let fixture = Fixture::new();
+    let real = fixture.real_path("system");
+    fs::create_dir_all(&real).unwrap();
+    let alias = fixture.base().join("system-link");
+    symlink(&real, &alias).unwrap();
+    let canonical = fs::canonicalize(&real).unwrap();
+    // A valid read-only record for the canonical destination proves the alias
+    // guard, not a missing or writable covering mount, is what rejects.
+    let info = mount_record(canonical.to_str().unwrap(), "ro");
+    let message = format!("{:#}", admission(&info, &alias).unwrap_err());
+    assert!(
+        message.contains("aliases are unsupported"),
+        "unexpected error: {message}"
+    );
+    // The declared root itself still admits: only the alias is rejected.
+    assert_eq!(admission(&info, &real).unwrap(), vec![Flag::ReadOnly]);
 }
 
 #[test]
