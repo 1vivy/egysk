@@ -1,6 +1,6 @@
 //! Filesystem backing adaptation, not a lifecycle dispatcher. Magisk calls these
 //! at PID1 preparation and daemon startup; no stage IPC or reconstruction service.
-use crate::{bootstrap, context::*, esp, fsutil as fsu, store};
+use crate::{bootstrap, context::*, esp, fsutil as fsu, identity::BootOwner, store};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -12,6 +12,9 @@ pub struct Storage {
     pub config: BootstrapConfig,
     pub mode: BootMode,
     pub debug: bool,
+    /// Early identity from the boot-early provider. It stays fixed for this
+    /// boot, so the Android stage does not read a changed owner.
+    pub owner: Option<BootOwner>,
     esp: u64,
     backing: u64,
 }
@@ -40,6 +43,9 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
     let debug = crate::debug_boot(&bootconfig, &cmdline);
     fsu::directory(Path::new(BIN))?;
     bootstrap::stage_tools(&config)?;
+    // Identity precedes every admission decision: module discovery, package
+    // policy and RC publication. The provider uses the mounted ESP only.
+    let owner = crate::identity::read(&config, mode)?;
     if config.backing.kind == "filesystem" {
         // Stock first-stage init owns this mount. No store, state, writable views
         // or module rdinit hooks exist yet; only package RC/policy is admitted.
@@ -47,6 +53,7 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
             config,
             mode,
             debug,
+            owner,
             esp,
             backing: 0,
         };
@@ -58,7 +65,7 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
     if !config.safe_mode && mode != BootMode::Charger {
         store::activate_pending(mode, &config.backing.mount_at)?;
     }
-    let modules = store::discover(&config, mode)?;
+    let modules = store::discover(&config, mode, owner)?;
     store::mount_view(&modules, store::ViewStage::Rdinit)?;
     fsu::directory(Path::new(RD))?;
     for module in &modules {
@@ -69,6 +76,7 @@ pub fn open_early() -> Result<(Storage, Vec<Module>)> {
             config,
             mode,
             debug,
+            owner,
             esp,
             backing: fs::metadata(STORE)?.dev(),
         },
@@ -94,7 +102,7 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
     let mut policy = String::new();
     let package_modules;
     let modules = if storage.config.backing.kind == "filesystem" {
-        package_modules = store::discover_package(&storage.config, storage.mode)?;
+        package_modules = store::discover_package(&storage.config, storage.mode, storage.owner)?;
         &package_modules
     } else {
         modules
@@ -105,9 +113,9 @@ pub fn save(storage: &Storage, modules: &[Module]) -> Result<()> {
         } else {
             Path::new(MODULES).join(&module.id)
         };
-        // A virtual-only module contributes no policy and no service in a
-        // physical or unknown boot-control boot: the native HAL keeps its own.
-        let admitted = !store::virtual_only_skipped(&root)?;
+        // A virtual-only module contributes no policy and no service unless the
+        // early identity named the virtual owner: the native HAL keeps its own.
+        let admitted = !store::virtual_only_skipped_by(&root, storage.owner)?;
         if admitted
             && let Some(rules) = fsu::optional_text(&root.join("sepolicy.rule"), 1024 * 1024)?
         {
@@ -154,7 +162,7 @@ pub fn open_android() -> Result<()> {
         store::activate_pending(storage.mode, &config.backing.mount_at)?;
     }
     bootstrap::label_tree(Path::new(STORE), FILE_CONTEXT)?;
-    let modules = store::discover(&config, storage.mode)?;
+    let modules = store::discover(&config, storage.mode, storage.owner)?;
     store::mount_view(&modules, store::ViewStage::Android)?;
     fsu::directory(Path::new(RD))?;
     for module in &modules {

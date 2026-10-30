@@ -260,15 +260,23 @@ Evidence: `debug_boot`, `shell_policy_sql`, and `configure_shell_policy` in
 ### Virtual-only modules need a named owner
 
 A module that replaces the boot-control service must not run beside the device's native boot HAL.
-The EFI names the boot-control owner in the bootconfig key `androidboot.maos.boot_control`. Egysk
-admits a module that contains a `virtual_only` file only when that value is exactly `virtual`. An
-absent or unknown value admits nothing, so a missing key cannot install a replacement HAL, its
-policy, or its RC. Egysk does not track or record the owner, and it does not count or bless boot
-entries. It reads the key on each boot.
+Module admission happens at PID 1, before Android's properties and before any later identity phase,
+so a property read cannot decide it. The package therefore names one early identity provider, and
+Egysk runs it after tool staging and before backing storage and discovery. The provider answers the
+`early-identity` command with one owner: `virtual`, `physical`, `unmanaged` for a recorded direct
+boot, or `missing` for no dispatch record. Egysk admits a module that contains a `virtual_only`
+file only for the `virtual` owner. Every other owner, and an absent provider field, admits nothing,
+so a missing identity cannot install a replacement HAL, its policy, or its RC. Egysk records the
+answer in the boot snapshot and reuses it for the Android stage; it does not count or bless boot
+entries, and it does not derive a second owner from the kernel command line or bootconfig.
 
-Evidence: `boot_control`, `virtual_only_skipped`, and `virtual_only_skipped_for` in
-`magisk/runtime/src/store.rs`, the admission check in `storage::save`
-(`magisk/runtime/src/storage.rs`), and the test
+A configured provider that fails, or a record with an unknown owner or unknown field, stops the
+boot. Safe mode and charger boot discover no module, so they make no admission decision and do not
+run the provider.
+
+Evidence: `identity::read` (`magisk/runtime/src/identity.rs`), `virtual_only_skipped_by` and
+`virtual_only_skipped_for` in `magisk/runtime/src/store.rs`, the provider call and admission check
+in `magisk/runtime/src/storage.rs`, and the test
 `virtual_only_modules_are_admitted_only_for_the_virtual_owner` in
 `magisk/runtime/tests/boot_contract.rs`.
 

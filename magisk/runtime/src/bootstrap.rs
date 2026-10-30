@@ -13,6 +13,12 @@ use std::time::{Duration, Instant};
 pub fn stage_tools(config: &BootstrapConfig) -> Result<()> {
     let mut tools = BTreeSet::from(BOOTSTRAP_TOOLS);
     tools.extend(config.backing.helper.as_deref());
+    tools.extend(
+        config
+            .early_identity
+            .as_ref()
+            .map(|provider| provider.tool.as_str()),
+    );
     tools.extend(config.tools.iter().map(String::as_str));
     for name in tools {
         identifier(name)?;

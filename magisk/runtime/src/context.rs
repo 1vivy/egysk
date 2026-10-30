@@ -74,12 +74,25 @@ pub struct Backing {
     pub args: Vec<String>,
 }
 
+/// Early boot-identity provider. The staged tool answers one `early-identity`
+/// command with a strict JSON record `{"owner": "virtual"|"physical"|
+/// "unmanaged"|"missing"}`. Absent means this boot names no owner.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EarlyIdentity {
+    pub tool: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // Producer-only KMI and LKM fields are intentionally not deserialized.
 pub struct BootstrapConfig {
     #[serde(default)]
     pub esp_device: Option<String>,
     pub backing: Backing,
+    /// Package field. The provider runs before module discovery
+    /// (`magisk/runtime/src/identity.rs`).
+    #[serde(default)]
+    pub early_identity: Option<EarlyIdentity>,
     /// Additional script barriers: stage.sh first, then stage.<phase>.sh in this order.
     #[serde(default)]
     pub phases: BTreeMap<String, Vec<String>>,
@@ -166,6 +179,9 @@ impl BootstrapConfig {
         );
         self.safe_mode |= bootstrap.safe_mode;
         self.norc |= bootstrap.norc;
+        // The package value overrides the seed. One provider per boot, so a
+        // second identity authority cannot appear later in the boot.
+        self.early_identity = self.early_identity.or(bootstrap.early_identity);
         Ok(self)
     }
 
@@ -221,6 +237,9 @@ impl BootstrapConfig {
         }
         for name in &self.tools {
             identifier(name)?;
+        }
+        if let Some(provider) = &self.early_identity {
+            identifier(&provider.tool)?;
         }
         for (stage, phases) in &self.phases {
             ensure!(

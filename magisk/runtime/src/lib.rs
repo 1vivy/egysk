@@ -6,6 +6,7 @@ pub mod context;
 mod esp;
 pub mod fsutil;
 mod gpt;
+pub mod identity;
 pub mod mounts;
 pub mod projection;
 pub mod scripts;

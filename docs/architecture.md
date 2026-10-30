@@ -41,13 +41,10 @@ rollback, and enable state (`magisk/runtime/src/lib.rs`).
 |`androidboot.recovery=1`|`bootstrap::boot_mode`|Selects recovery lifecycle.|
 |`androidboot.mode=charger`|`bootstrap::boot_mode`|Selects charger mode. Modules do not load.|
 |`androidboot.force_normal_boot=1`|`bootstrap::boot_mode`|Prevents the `/sbin/recovery` probe from selecting recovery.|
-|`androidboot.maos.boot_control`|`store::boot_control` (bootconfig only)|Admits `virtual_only` modules only when the value is exactly `virtual`. An absent, `physical`, or other value admits none of them.|
+|`[early_identity] tool = "maos-platform"` in `/egysk.toml` and `egysk/egysk.toml`|`identity::read` (before backing and discovery)|Runs the staged tool with the `early-identity` command and reads its owner record. A `virtual_only` module is admitted only for the `virtual` owner. Package value overrides the seed, and an absent field names no owner.|
 
 Bootconfig overrides the kernel command line per key, including explicitly disabled values
 (`magisk/runtime/src/lib.rs`).
-
-`androidboot.maos.boot_control` is an exception: egysk reads it only from `/proc/bootconfig`, not
-from the kernel command line (`magisk/runtime/src/store.rs`).
 
 ## Boot sequence
 
@@ -68,7 +65,11 @@ The consumer adds the archive to a ramdisk and passes `rdinit=/egyskinit`. The a
    The boot-payload module comes from the archive (`/egysk/modules/lkm-loader`), not from module
    discovery.
 4. `storage::open_early` mounts the ESP, merges seed and package configuration, classifies the boot
-   mode, stages tools into `/dev/egysk/bin`, and prepares backing storage.
+   mode, stages tools into `/dev/egysk/bin`, reads the early identity record when the package names
+   a provider, and prepares backing storage. The provider runs after tool staging and before any
+   module or package admission decision. A configured provider that fails, or a record with an
+   unknown owner, stops the boot; there is no bootconfig fallback. Safe mode and charger boot
+   discover no module, so they do not run the provider (`magisk/runtime/src/identity.rs`).
 5. With block backing, it reclaims lower caches, activates a pending package, and discovers modules.
    It mounts read-only views and runs each module's `rdinit` scripts.
    All `rdinit` phases share one 35-second deadline (`magisk/product/init.rs`).
@@ -155,15 +156,16 @@ must contain a `module.prop` whose `id` matches the directory name.
 
 `modules_order` in the package sets precedence. Unlisted modules follow in sorted order. A module
 is skipped when its `disable` or `remove` flag is set, when recovery lacks `recovery_ok`, or when
-it contains a `virtual_only` file and `androidboot.maos.boot_control` is not exactly `virtual`.
+it contains a `virtual_only` file and the early identity owner is not `virtual`.
 Preference files under `/dev/egysk/store/preferences/<id>/` override the `disable` and `remove`
 package flags when the store is available (`magisk/runtime/src/store.rs`).
 
 The `virtual_only` check tests only whether the file exists, not its value. A skipped module gets
 no view, no `rdinit` hook, and no stage script. `storage::save` also leaves out its
 `sepolicy.rule` and its `initrc/*.rc` files, so it adds no policy and no service to the boot
-(`magisk/runtime/src/storage.rs`). On a physical or unknown boot-control owner, the native boot HAL
-and its policy therefore stay unchanged. The PID 1 boot-payload LKMs are not subject to this check.
+(`magisk/runtime/src/storage.rs`). On a physical, unmanaged, missing or absent owner, the native
+boot HAL and its policy therefore stay unchanged. The PID 1 boot-payload LKMs are not subject to
+this check.
 
 The ESP is VFAT, so its module content is copied to read-only tmpfs lowers under
 `/dev/egysk/lowers`. Generation identity binds upper/work pairs to package bytes. The overlay

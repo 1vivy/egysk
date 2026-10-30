@@ -181,6 +181,30 @@ fn property_flags_and_conventional_magisk_markers_are_supported() {
 }
 
 #[test]
+fn early_identity_provider_is_a_named_package_tool() {
+    let backing = r#"
+        [backing]
+        kind = "filesystem"
+        source = "/metadata"
+        fs_type = "f2fs"
+        mount_at = "/metadata"
+    "#;
+    assert!(
+        parse_bootstrap_config(backing)
+            .unwrap()
+            .early_identity
+            .is_none()
+    );
+    let named = format!("{backing}[early_identity]\ntool = \"maos-platform\"\n");
+    let provider = parse_bootstrap_config(&named).unwrap().early_identity;
+    assert_eq!(provider.unwrap().tool, "maos-platform");
+    let empty = format!("{backing}[early_identity]\n");
+    assert!(parse_bootstrap_config(&empty).is_err());
+    let unsafe_tool = format!("{backing}[early_identity]\ntool = \"../maos\"\n");
+    assert!(parse_bootstrap_config(&unsafe_tool).is_err());
+}
+
+#[test]
 fn generation_is_content_sensitive_and_safe_links_are_preserved() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("system")).unwrap();
