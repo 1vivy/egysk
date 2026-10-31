@@ -181,6 +181,22 @@ fn property_flags_and_conventional_magisk_markers_are_supported() {
 }
 
 #[test]
+fn virtual_only_modules_are_admitted_only_for_the_virtual_owner() {
+    let root = tempfile::tempdir().unwrap();
+    // A module without the flag is admitted in every boot-control mode.
+    for owner in [None, Some("physical"), Some("virtual"), Some("other")] {
+        assert!(!store::virtual_only_skipped_for(root.path(), owner).unwrap());
+    }
+    fs::write(root.path().join("virtual_only"), "1\n").unwrap();
+    assert!(!store::virtual_only_skipped_for(root.path(), Some("virtual")).unwrap());
+    // Physical, unknown and absent owners never admit the module: its RC, its
+    // sepolicy.rule and its stage scripts stay out of the boot.
+    for owner in [None, Some("physical"), Some("other"), Some("Virtual")] {
+        assert!(store::virtual_only_skipped_for(root.path(), owner).unwrap());
+    }
+}
+
+#[test]
 fn early_identity_provider_is_a_named_package_tool() {
     let backing = r#"
         [backing]
